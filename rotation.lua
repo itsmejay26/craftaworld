@@ -450,22 +450,40 @@ local function RunHarvest(rows, guardFn, refY)
 
         elseif isLast then
             walkToX(JUMP_RIGHT,guardFn); if not guardFn() then return false end
-            SetStatus("COLLECT "..ri.."/"..#rows.." <- Y="..rowY, Color3.fromRGB(80,220,255))
-            lr=tick(); startMoveLeft()
-            while guardFn() do
-                local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 ~= rowY then
-                    stopAll()
-                    local fallX = math.max(ix, JUMP_LEFT)
-                    climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(fallX, guardFn); if not guardFn() then return false end
-                    lr=tick(); startMoveLeft(); continue
+
+            -- If we already fell off the row immediately after walking to x99
+            -- (tiles at this Y were already cleared by the middle row's below-pass),
+            -- skip the collect sweep entirely and go straight to break floor.
+            local _,postWalkY = GetTileIndex()
+            local doCollect = not (postWalkY and postWalkY < rowY)
+
+            if doCollect then
+                SetStatus("COLLECT "..ri.."/"..#rows.." <- Y="..rowY, Color3.fromRGB(80,220,255))
+                lr=tick(); startMoveLeft()
+                local climbRetries = 0
+                while guardFn() do
+                    local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
+                    if iy2 and iy2 ~= rowY then
+                        stopAll()
+                        climbRetries += 1
+                        -- After 4 failed attempts the row floor is gone — give up collect
+                        if climbRetries > 4 then
+                            SetStatus("COLLECT: no floor at Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
+                            break
+                        end
+                        local fallX = math.max(ix, JUMP_LEFT)
+                        climbToY(rowY, guardFn); if not guardFn() then return false end
+                        walkToX(fallX, guardFn); if not guardFn() then return false end
+                        lr=tick(); startMoveLeft(); continue
+                    end
+                    climbRetries = 0  -- reset on a good frame
+                    if ix <= JUMP_LEFT then stopAll(); break end
+                    if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
+                    task.wait(0.01)
                 end
-                if ix <= JUMP_LEFT then stopAll(); break end
-                if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
-                task.wait(0.01)
+                stopAll(); if not guardFn() then return false end
             end
-            stopAll(); if not guardFn() then return false end
+
             SetStatus("-> BREAK FLOOR", Color3.fromRGB(255,100,80))
             walkToX(JUMP_LEFT,guardFn); if not guardFn() then return false end
             lr=tick(); startMoveRight()
