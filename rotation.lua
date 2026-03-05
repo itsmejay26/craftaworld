@@ -299,6 +299,10 @@ local function ensureWatching() if not worldWatching then fullScan(); startWatch
 --  HARVEST
 -- ============================================================
 local function RunHarvest(rows, guardFn, refY)
+    -- Force a fresh tile scan every harvest to ensure worldTileSet is current.
+    -- Without this, tiles planted after the initial scan may not be registered,
+    -- causing hFire to silently skip rows where wTE returns false.
+    fullScan()
     ensureWatching()
     local HARVEST_MISS_DELAY = 0.65
     local hPending = {}
@@ -463,22 +467,26 @@ local function RunHarvest(rows, guardFn, refY)
                 local climbRetries = 0
                 while guardFn() do
                     local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
+                    -- Fell to wrong Y: stop, climb back to rowY, resume from saved X
                     if iy2 and iy2 ~= rowY then
                         stopAll()
                         climbRetries += 1
-                        -- After 4 failed attempts the row floor is gone — give up collect
                         if climbRetries > 4 then
                             SetStatus("COLLECT: no floor at Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
                             break
                         end
-                        local fallX = math.max(ix, JUMP_LEFT)
+                        local resumeX = math.max(ix, JUMP_LEFT)
+                        SetStatus("COLLECT: fell to Y="..iy2.." -> climb back", Color3.fromRGB(200,160,80))
                         climbToY(rowY, guardFn); if not guardFn() then return false end
-                        walkToX(fallX, guardFn); if not guardFn() then return false end
+                        -- Walk back to where we fell from and continue leftward
+                        walkToX(resumeX, guardFn); if not guardFn() then return false end
                         lr=tick(); startMoveLeft(); continue
                     end
-                    climbRetries = 0  -- reset on a good frame
+                    climbRetries = 0
                     if ix <= JUMP_LEFT then stopAll(); break end
                     if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
+                    -- Break any missed harvest tree at ix-1 while sweeping left
+                    if ix > 1 then fstR:FireServer(Vector2.new(ix - 1, iy2)) end
                     task.wait(0.01)
                 end
                 stopAll(); if not guardFn() then return false end
