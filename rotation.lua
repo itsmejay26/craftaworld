@@ -538,8 +538,9 @@ local function RunHarvest(rows, guardFn, refY)
                 if not ix then task.wait(0.01); continue end
                 -- Reached break floor — done
                 if iy2 and iy2 <= BREAK_FLOOR_Y then stopAll(); task.wait(0.15); break end
-                -- Fell to a wrong intermediate row (not break floor yet) — climb back
-                if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y then
+                -- Fell to wrong intermediate row BUT only recover if we're not near the right edge
+                -- (near x100 the fall is intentional — we walk off to reach break floor)
+                if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y and ix < TRAVERSE_RIGHT - 5 then
                     stopAll()
                     SetStatus("-> BF right: wrong Y="..iy2.." -> climb back", Color3.fromRGB(200,120,60))
                     local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
