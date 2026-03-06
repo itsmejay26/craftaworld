@@ -467,20 +467,33 @@ local function RunHarvest(rows, guardFn, refY)
                 local climbRetries = 0
                 while guardFn() do
                     local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                    -- Fell to wrong Y: stop, climb back to rowY, resume from saved X
-                    if iy2 and iy2 ~= rowY then
+                    -- Not on correct Y: go to nearest side then climb back up
+                    if not iy2 or iy2 ~= rowY then
                         stopAll()
                         climbRetries += 1
                         if climbRetries > 4 then
                             SetStatus("COLLECT: no floor at Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
                             break
                         end
-                        local resumeX = math.max(ix, JUMP_LEFT)
-                        SetStatus("COLLECT: fell to Y="..iy2.." -> climb back", Color3.fromRGB(200,160,80))
-                        climbToY(rowY, guardFn); if not guardFn() then return false end
-                        -- Walk back to where we fell from and continue leftward
-                        walkToX(resumeX, guardFn); if not guardFn() then return false end
-                        lr=tick(); startMoveLeft(); continue
+                        -- Walk to nearest side: x1 if closer to left, x99 if closer to right
+                        local nearSide = (ix and ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        SetStatus("COLLECT: wrong Y -> side "..nearSide.." then climb", Color3.fromRGB(200,160,80))
+                        walkToX(nearSide, guardFn); if not guardFn() then return false end
+                        -- Jump up to correct row from the side
+                        local ja, maxJ = 0, 40
+                        while guardFn() and ja < maxJ do
+                            local _,cy = GetTileIndex()
+                            if cy and cy >= rowY then break end
+                            pressKey(Enum.KeyCode.Space); task.wait(JUMP_HOLD); releaseKey(Enum.KeyCode.Space); task.wait(0.2)
+                            ja += 1
+                        end
+                        if not guardFn() then return false end
+                        -- Resume leftward from current x position
+                        local rx = GetTileIndex()
+                        if rx then
+                            lr=tick(); startMoveLeft()
+                        end
+                        continue
                     end
                     climbRetries = 0
                     if ix <= JUMP_LEFT then stopAll(); break end
