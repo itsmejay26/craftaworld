@@ -505,7 +505,33 @@ local function RunHarvest(rows, guardFn, refY)
             end
 
             SetStatus("-> BREAK FLOOR", Color3.fromRGB(255,100,80))
-            walkToX(JUMP_LEFT,guardFn); if not guardFn() then return false end
+            -- Walk to x1 first, with Y correction if we accidentally fall mid-walk
+            do
+                local reachedX1 = false
+                local retries = 0
+                while guardFn() and not reachedX1 do
+                    local ix, iy2 = GetTileIndex()
+                    if not ix then task.wait(0.01); continue end
+                    -- If we fell to a wrong intermediate row, climb back to rowY and retry
+                    if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y then
+                        stopAll()
+                        retries += 1
+                        if retries > 5 then break end -- give up, just fall to break floor naturally
+                        SetStatus("-> BF: fell to Y="..iy2.." -> climb back", Color3.fromRGB(200,120,60))
+                        local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        walkToX(side, guardFn); if not guardFn() then return false end
+                        climbToY(rowY, guardFn); if not guardFn() then return false end
+                        walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
+                    end
+                    if ix <= JUMP_LEFT then reachedX1 = true; stopAll(); break end
+                    if not (iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y) then
+                        pressKey(Enum.KeyCode.A)
+                    end
+                    task.wait(0.01)
+                end
+                releaseKey(Enum.KeyCode.A); stopAll()
+                if not guardFn() then return false end
+            end
             lr=tick(); startMoveRight()
             while guardFn() do
                 local _,iy2 = GetTileIndex()
