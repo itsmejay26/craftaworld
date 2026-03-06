@@ -534,8 +534,20 @@ local function RunHarvest(rows, guardFn, refY)
             end
             lr=tick(); startMoveRight()
             while guardFn() do
-                local _,iy2 = GetTileIndex()
+                local ix, iy2 = GetTileIndex()
+                if not ix then task.wait(0.01); continue end
+                -- Reached break floor — done
                 if iy2 and iy2 <= BREAK_FLOOR_Y then stopAll(); task.wait(0.15); break end
+                -- Fell to a wrong intermediate row (not break floor yet) — climb back
+                if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y then
+                    stopAll()
+                    SetStatus("-> BF right: wrong Y="..iy2.." -> climb back", Color3.fromRGB(200,120,60))
+                    local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+                    walkToX(side, guardFn); if not guardFn() then return false end
+                    climbToY(rowY, guardFn); if not guardFn() then return false end
+                    walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
+                    lr=tick(); startMoveRight(); continue
+                end
                 if tick()-lr >= MOVE_REFRESH then startMoveRight(); lr=tick() end
                 task.wait(0.01)
             end
