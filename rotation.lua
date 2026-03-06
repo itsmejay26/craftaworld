@@ -463,38 +463,37 @@ local function RunHarvest(rows, guardFn, refY)
 
             if doCollect then
                 SetStatus("COLLECT "..ri.."/"..#rows.." <- Y="..rowY, Color3.fromRGB(80,220,255))
-                lr=tick(); startMoveLeft()
                 local climbRetries = 0
+                local resumeX = JUMP_RIGHT  -- start from right side, sweeping left
+                lr = tick(); startMoveLeft()
                 while guardFn() do
-                    local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                    -- Not on correct Y: go to nearest side then climb back up
+                    -- Always verify Y position before doing anything each iteration
+                    local ix, iy2 = GetTileIndex()
+                    if not ix then task.wait(0.01); continue end
+
+                    -- Wrong Y: stop immediately, go to nearest side, climb back up
                     if not iy2 or iy2 ~= rowY then
                         stopAll()
                         climbRetries += 1
-                        if climbRetries > 4 then
-                            SetStatus("COLLECT: no floor at Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
+                        if climbRetries > 6 then
+                            SetStatus("COLLECT: can't reach Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
                             break
                         end
-                        -- Walk to nearest side: x1 if closer to left, x99 if closer to right
-                        local nearSide = (ix and ix <= 50) and JUMP_LEFT or JUMP_RIGHT
-                        SetStatus("COLLECT: wrong Y -> side "..nearSide.." then climb", Color3.fromRGB(200,160,80))
-                        walkToX(nearSide, guardFn); if not guardFn() then return false end
-                        -- Jump up to correct row from the side
-                        local ja, maxJ = 0, 40
-                        while guardFn() and ja < maxJ do
-                            local _,cy = GetTileIndex()
-                            if cy and cy >= rowY then break end
-                            pressKey(Enum.KeyCode.Space); task.wait(JUMP_HOLD); releaseKey(Enum.KeyCode.Space); task.wait(0.2)
-                            ja += 1
-                        end
-                        if not guardFn() then return false end
-                        -- Resume leftward from current x position
-                        local rx = GetTileIndex()
-                        if rx then
-                            lr=tick(); startMoveLeft()
-                        end
+                        SetStatus("COLLECT: wrong Y="..tostring(iy2).." -> climbing to "..rowY, Color3.fromRGB(200,160,80))
+                        -- Save where we fell from so we resume from there after climbing
+                        resumeX = ix or JUMP_RIGHT
+                        -- Walk to nearest side wall first so climbToY has solid ground
+                        local side = (resumeX <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        walkToX(side, guardFn); if not guardFn() then return false end
+                        -- Use the proven climbToY to get back to rowY
+                        climbToY(rowY, guardFn); if not guardFn() then return false end
+                        -- Walk back to where we fell from, then continue sweeping left
+                        walkToX(resumeX, guardFn); if not guardFn() then return false end
+                        lr = tick(); startMoveLeft()
                         continue
                     end
+
+                    -- On correct Y — check if we've reached the left boundary
                     climbRetries = 0
                     if ix <= JUMP_LEFT then stopAll(); break end
                     if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
