@@ -482,15 +482,16 @@ local function RunHarvest(rows, guardFn, refY)
                             break
                         end
                         SetStatus("COLLECT: wrong Y="..tostring(iy2).." -> climbing to "..rowY, Color3.fromRGB(200,160,80))
-                        -- Save where we fell from so we resume from there after climbing
-                        resumeX = ix or JUMP_RIGHT
+                        -- Save where we fell from, then skip 2 tiles past it to avoid re-falling on the same gap
+                        local fellAtX = ix or JUMP_RIGHT
+                        local safeResumeX = math.max(JUMP_LEFT + 1, fellAtX - 2)
                         -- Walk to nearest side wall first so climbToY has solid ground
-                        local side = (resumeX <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        local side = (fellAtX <= 50) and JUMP_LEFT or JUMP_RIGHT
                         walkToX(side, guardFn); if not guardFn() then return false end
                         -- Use the proven climbToY to get back to rowY
                         climbToY(rowY, guardFn); if not guardFn() then return false end
-                        -- Walk back to where we fell from, then continue sweeping left
-                        walkToX(resumeX, guardFn); if not guardFn() then return false end
+                        -- Walk to 2 tiles past where we fell (not back to the exact gap)
+                        walkToX(safeResumeX, guardFn); if not guardFn() then return false end
                         lr = tick(); startMoveLeft()
                         continue
                     end
@@ -536,21 +537,8 @@ local function RunHarvest(rows, guardFn, refY)
             end
             lr=tick(); startMoveRight()
             while guardFn() do
-                local ix, iy2 = GetTileIndex()
-                if not ix then task.wait(0.01); continue end
-                -- Reached break floor — done
+                local _,iy2 = GetTileIndex()
                 if iy2 and iy2 <= BREAK_FLOOR_Y then stopAll(); task.wait(0.15); break end
-                -- Fell to wrong intermediate row BUT only recover if we're not near the right edge
-                -- (near x100 the fall is intentional — we walk off to reach break floor)
-                if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y and ix < TRAVERSE_RIGHT - 5 then
-                    stopAll()
-                    SetStatus("-> BF right: wrong Y="..iy2.." -> climb back", Color3.fromRGB(200,120,60))
-                    local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
-                    walkToX(side, guardFn); if not guardFn() then return false end
-                    climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
-                    lr=tick(); startMoveRight(); continue
-                end
                 if tick()-lr >= MOVE_REFRESH then startMoveRight(); lr=tick() end
                 task.wait(0.01)
             end
@@ -594,6 +582,39 @@ end
 -- ============================================================
 local function RunBreak(guardFn)
     if not CFG.breakX then SetStatus("BREAK: No X set!", Color3.fromRGB(255,80,80)); return false end
+
+    -- ── Ensure bot is on the break floor (Y=BREAK_FLOOR_Y) before anything ──
+    do
+        local ix, iy = GetTileIndex()
+        if iy and iy ~= BREAK_FLOOR_Y then
+            SetStatus("BREAK: not on floor Y="..BREAK_FLOOR_Y..", going down", Color3.fromRGB(220,150,50))
+            -- Walk to nearest side wall, then walk off or fall down to break floor
+            local side = (ix and ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+            walkToX(side, guardFn); if not guardFn() then return false end
+            -- Move toward the opposite edge to fall off and land on break floor
+            local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.D or Enum.KeyCode.A
+            local lr = tick(); pressKey(fallKey)
+            while guardFn() do
+                local _,cy = GetTileIndex()
+                if cy and cy <= BREAK_FLOOR_Y then
+                    releaseKey(fallKey); stopAll(); task.wait(0.15); break
+                end
+                if tick()-lr >= MOVE_REFRESH then
+                    releaseKey(fallKey); task.wait(0.01); pressKey(fallKey); lr=tick()
+                end
+                task.wait(0.01)
+            end
+            releaseKey(fallKey); stopAll()
+            if not guardFn() then return false end
+            -- Confirm we are now on break floor
+            local _,cy = GetTileIndex()
+            if cy and cy ~= BREAK_FLOOR_Y then
+                SetStatus("BREAK: still wrong Y="..tostring(cy)..", retrying", Color3.fromRGB(255,80,80))
+                task.wait(0.5)
+            end
+        end
+    end
+
     SetStatus("BREAK -> X="..CFG.breakX, Color3.fromRGB(220,150,50))
     -- Walk to break position while fisting tiles at ix-1 along the way
     do
