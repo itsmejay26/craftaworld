@@ -62,6 +62,7 @@ local CFG = {
 -- ============ RUNTIME STATE ============
 local isRunning=false; local isPaused=false; local currentBatchY=31; local cycleCount=0; local statusLabel=nil
 local pauseBtn=nil  -- reference set later in GUI section
+local stuckTargetY=nil  -- updated by harvest/collect phases; used by stuck detector
 local function SetStatus(t,c) if statusLabel then statusLabel.Text=t; statusLabel.TextColor3=c or Color3.fromRGB(200,255,210) end end
 
 
@@ -358,6 +359,7 @@ local function RunHarvest(rows, guardFn, refY)
 
     for ri, rowY in ipairs(rows) do
         if not guardFn() then return false end
+        stuckTargetY = rowY  -- tell stuck detector which row we're working on
         local isFirst = (ri == 1)
         local isLast  = (ri == #rows)
         local belowY  = rowY - 2
@@ -914,6 +916,63 @@ local function RunCycle()
     end
 
     ensureWatching()
+
+    -- ── Stuck detector ───────────────────────────────────────────
+    -- If bot hasn't moved for 60s: fist ix-1 for 5s, fist ix+1 for 5s,
+    -- walk to nearest side, climbToY(stuckTargetY) to resume correct row.
+    local stuckRecovering = false
+    task.spawn(function()
+        local lastX, lastY = nil, nil
+        local stuckSince   = nil
+        local STUCK_TIME   = 60  -- seconds without movement before recovery
+        local FIST_TIME    = 5   -- seconds to fist each direction
+        while isRunning and not inst.dead do
+            task.wait(0.5)
+            if not isRunning or inst.dead then break end
+            if isPaused or stuckRecovering then
+                stuckSince = nil; lastX, lastY = nil, nil; continue
+            end
+            if not stuckTargetY then stuckSince = nil; continue end
+            local ix, iy = GetTileIndex()
+            if not ix or not iy then stuckSince = nil; continue end
+            if ix == lastX and iy == lastY then
+                stuckSince = stuckSince or tick()
+                if tick() - stuckSince >= STUCK_TIME then
+                    stuckRecovering = true
+                    stuckSince      = nil
+                    stopAll(); task.wait(0.1)
+                    SetStatus("⚠ STUCK — fisting x-1 for 5s", Color3.fromRGB(255,80,80))
+                    local t = tick()
+                    while tick()-t < FIST_TIME do
+                        local fx,fy = GetTileIndex()
+                        if fx and fy then fstR:FireServer(Vector2.new(fx-1, fy)) end
+                        task.wait(0.1)
+                    end
+                    SetStatus("⚠ STUCK — fisting x+1 for 5s", Color3.fromRGB(255,110,50))
+                    t = tick()
+                    while tick()-t < FIST_TIME do
+                        local fx,fy = GetTileIndex()
+                        if fx and fy then fstR:FireServer(Vector2.new(fx+1, fy)) end
+                        task.wait(0.1)
+                    end
+                    local sx = GetTileIndex() or 50
+                    local side = (sx <= 50) and JUMP_LEFT or JUMP_RIGHT
+                    SetStatus("⚠ STUCK — going to side "..side, Color3.fromRGB(255,160,60))
+                    walkToX(side, function() return isRunning and not inst.dead end)
+                    local targetY = stuckTargetY or CFG.farmStartY
+                    SetStatus("⚠ STUCK — climbing to Y="..targetY, Color3.fromRGB(255,200,80))
+                    climbToY(targetY, function() return isRunning and not inst.dead end)
+                    SetStatus("⚠ STUCK — recovered", Color3.fromRGB(150,255,180))
+                    stuckRecovering = false
+                    lastX, lastY = nil, nil
+                end
+            else
+                lastX, lastY = ix, iy
+                stuckSince = nil
+            end
+        end
+    end)
+
     while guard() do
         cycleCount+=1
         local rows=getRows(currentBatchY,CFG.rowsPerCycle,refY)
