@@ -216,7 +216,8 @@ local function descendToY(targetY, guardFn)
     -- Walk to nearest side wall and walk off to fall down
     local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
     walkToX(side, guardFn); if not guardFn() then return end
-    local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.D or Enum.KeyCode.A
+    -- Press toward the wall edge to fall off: left wall = press A, right wall = press D
+    local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.A or Enum.KeyCode.D
     local lr = tick(); pressKey(fallKey)
     while guardFn() do
         local _,cy = GetTileIndex()
