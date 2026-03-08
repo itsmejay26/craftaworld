@@ -258,80 +258,103 @@ local function GetTotalByCode(code)
 end
 
 -- ============ PER-PLAYER SAVE / LOAD ============
-local SAVE_FILE = "RotFarm_SaveData.json"
+local PROGRESS_FILE = "RotFarm_SaveData.json"
 local currentPlayerName = player.Name
 
 local function loadAllSaves()
     local ok, data = pcall(function()
-        local raw = readfile(SAVE_FILE)
-        return game:GetService("HttpService"):JSONDecode(raw)
+        local raw = readfile(PROGRESS_FILE)
+        return HttpService:JSONDecode(raw)
     end)
     return (ok and type(data)=="table") and data or {}
 end
 
 local function saveAllSaves(data)
     pcall(function()
-        writefile(SAVE_FILE, game:GetService("HttpService"):JSONEncode(data))
+        writefile(PROGRESS_FILE, HttpService:JSONEncode(data))
     end)
 end
 
--- Save current progress for a given player (uses their raw slot key, not runtime code)
+-- Save current progress — runs async so it never blocks the farm loop
 local function saveProgress(phase)
-    pcall(function()
-        local all = loadAllSaves()
-        -- Resolve raw slot keys from current runtime codes so they survive restarts
-        local plantKey, breakKey = nil, nil
-        if CFG.plantItem then
-            for _,slot in pairs(invScroll:GetChildren()) do
-                if tonumber(slot.Name) then
-                    local k = GetSlotKey(slot)
-                    if k and GetCode(k) == CFG.plantItem then plantKey = k; break end
+    task.spawn(function()
+        pcall(function()
+            local all = loadAllSaves()
+            -- Resolve raw slot keys from runtime codes so they survive restarts
+            local plantKey, breakKey = nil, nil
+            if CFG.plantItem then
+                for _,slot in pairs(invScroll:GetChildren()) do
+                    if tonumber(slot.Name) then
+                        local k = GetSlotKey(slot)
+                        if k and GetCode(k) == CFG.plantItem then plantKey = k; break end
+                    end
                 end
             end
-        end
-        if CFG.breakItem then
-            for _,slot in pairs(invScroll:GetChildren()) do
-                if tonumber(slot.Name) then
-                    local k = GetSlotKey(slot)
-                    if k and GetCode(k) == CFG.breakItem then breakKey = k; break end
+            if CFG.breakItem then
+                for _,slot in pairs(invScroll:GetChildren()) do
+                    if tonumber(slot.Name) then
+                        local k = GetSlotKey(slot)
+                        if k and GetCode(k) == CFG.breakItem then breakKey = k; break end
+                    end
                 end
             end
-        end
-        all[currentPlayerName] = {
-            farmStartX   = CFG.farmStartX,
-            farmStartY   = CFG.farmStartY,
-            currentBatchY= currentBatchY,
-            breakX       = CFG.breakX,
-            rowsPerCycle = CFG.rowsPerCycle,
-            plantItemKey = plantKey,
-            breakItemKey = breakKey,
-            lastPhase    = phase,
-            cycleCount   = cycleCount,
-            timestamp    = os.time(),
-        }
-        saveAllSaves(all)
+            -- Serialize whitelist
+            local wlCopy = {}
+            for _,v in ipairs(whitelist) do table.insert(wlCopy, v) end
+            all[currentPlayerName] = {
+                farmStartX   = CFG.farmStartX,
+                farmStartY   = CFG.farmStartY,
+                currentBatchY= currentBatchY,
+                breakX       = CFG.breakX,
+                rowsPerCycle = CFG.rowsPerCycle,
+                breakBlocks  = CFG.breakBlocks,
+                batchStart   = CFG.batchStart,
+                growTime     = CFG.growTime,
+                skipGrow     = CFG.skipGrow,
+                safeAutoStop = safeAutoStop,
+                safeAutoLeave= safeAutoLeave,
+                whitelist    = wlCopy,
+                plantItemKey = plantKey,
+                breakItemKey = breakKey,
+                lastPhase    = phase,
+                cycleCount   = cycleCount,
+                timestamp    = os.time(),
+            }
+            saveAllSaves(all)
+        end)
     end)
 end
 
--- Restore a saved player's data into CFG and runtime state
--- Returns true if successful, false otherwise
+-- Applies a saved player's data into CFG and runtime state
+-- Returns saved data table if found, nil otherwise
 local function applyPlayerSave(username)
     local all = loadAllSaves()
     local d = all[username]
-    if not d then return false end
-    CFG.farmStartX   = d.farmStartX   or CFG.farmStartX
-    CFG.farmStartY   = d.farmStartY   or CFG.farmStartY
-    CFG.breakX       = d.breakX       or CFG.breakX
-    CFG.rowsPerCycle = d.rowsPerCycle or CFG.rowsPerCycle
-    currentBatchY    = d.currentBatchY or CFG.farmStartY
-    -- Re-resolve item codes from saved raw slot keys
-    if d.plantItemKey then
-        CFG.plantItem = GetCode(d.plantItemKey)
+    if not d then return nil end
+    -- Positions and config
+    if d.farmStartX   then CFG.farmStartX   = d.farmStartX   end
+    if d.farmStartY   then CFG.farmStartY   = d.farmStartY   end
+    if d.breakX       then CFG.breakX       = d.breakX       end
+    if d.rowsPerCycle then CFG.rowsPerCycle = d.rowsPerCycle end
+    if d.breakBlocks  then CFG.breakBlocks  = d.breakBlocks  end
+    if d.batchStart   then CFG.batchStart   = d.batchStart   end
+    if d.growTime     then CFG.growTime     = d.growTime     end
+    if d.skipGrow     ~= nil then CFG.skipGrow = d.skipGrow  end
+    -- Safe mode
+    if d.safeAutoStop  ~= nil then safeAutoStop  = d.safeAutoStop  end
+    if d.safeAutoLeave ~= nil then safeAutoLeave = d.safeAutoLeave end
+    -- Whitelist
+    if d.whitelist and type(d.whitelist)=="table" then
+        whitelist = {}
+        for _,v in ipairs(d.whitelist) do table.insert(whitelist, v) end
+        EnsureDefault()
+        SaveWhitelist()
     end
-    if d.breakItemKey then
-        CFG.breakItem = GetCode(d.breakItemKey)
-    end
-    return true, d
+    -- Item codes from raw slot keys
+    if d.plantItemKey then CFG.plantItem = GetCode(d.plantItemKey) end
+    if d.breakItemKey then CFG.breakItem = GetCode(d.breakItemKey) end
+    -- Restore batch position (currentBatchY stored separately so RunCycle can use it)
+    return d
 end
 
 -- ============ WORLD TILE TRACKING ============
@@ -989,32 +1012,27 @@ end
 -- ============================================================
 local function RunCycle()
     cycleCount=0
+
+    -- Apply resume FIRST so restored items pass validation below
+    local restoredBatchY = nil
+    if resumeEnabled then
+        local targetName = resumeTargetPlayer or currentPlayerName
+        local saved = applyPlayerSave(targetName)
+        if saved then
+            restoredBatchY = saved.currentBatchY or CFG.farmStartY
+            SetStatus("RESUMING "..targetName.." ("..tostring(saved.lastPhase)..")", Color3.fromRGB(180,220,255))
+        else
+            SetStatus("No save found for "..targetName.." — starting fresh", Color3.fromRGB(255,180,80))
+            task.wait(1)
+        end
+    end
+
     if not CFG.farmStartX or not CFG.farmStartY then SetStatus("SET FARM START!", Color3.fromRGB(255,80,80)); isRunning=false; return end
     if not CFG.breakX    then SetStatus("SET BREAK POS!",   Color3.fromRGB(255,80,80)); isRunning=false; return end
     if not CFG.plantItem then SetStatus("APPLY PLANT ITEM!",Color3.fromRGB(255,80,80)); isRunning=false; return end
     if not CFG.breakItem then SetStatus("APPLY BREAK ITEM!",Color3.fromRGB(255,80,80)); isRunning=false; return end
 
-    local refY=CFG.farmStartY
-    -- Apply resume last progress if enabled
-    if resumeEnabled then
-        local targetName = resumeTargetPlayer or currentPlayerName
-        local ok, saved = applyPlayerSave(targetName)
-        if ok and saved then
-            SetStatus("RESUMING "..targetName.." ("..tostring(saved.lastPhase)..")", Color3.fromRGB(180,220,255))
-            refY = CFG.farmStartY
-            -- Update GUI labels to reflect restored values
-            pcall(function()
-                if farmLbl then farmLbl.Text="Farm: X="..(CFG.farmStartX or "?").."  Y="..(CFG.farmStartY or "?") end
-                if breakLbl then breakLbl.Text="Break: X="..(CFG.breakX or "?") end
-                if plantItemLbl then plantItemLbl.Text="Plant: "..(saved.plantItemKey and tostring(saved.plantItemKey):sub(1,28) or "NOT SET") end
-                if breakItemLbl then breakItemLbl.Text="Break: "..(saved.breakItemKey and tostring(saved.breakItemKey):sub(1,28) or "NOT SET") end
-            end)
-            task.wait(1)
-        else
-            SetStatus("No save found for "..targetName, Color3.fromRGB(255,180,80))
-            task.wait(1)
-        end
-    end
+    local refY = CFG.farmStartY
     -- guard blocks (spin-waits) while paused so every inner movement loop halts automatically
     local guard=function()
         if isPaused and isRunning and not inst.dead then
@@ -1027,8 +1045,9 @@ local function RunCycle()
         return isRunning and not inst.dead
     end
 
-    currentBatchY = CFG.farmStartY
-    if CFG.batchStart > 1 then
+    -- Set starting batch position — use restored value if resuming, else farmStartY
+    currentBatchY = restoredBatchY or CFG.farmStartY
+    if not restoredBatchY and CFG.batchStart > 1 then
         local step = CFG.rowsPerCycle * 2
         for _=1, CFG.batchStart-1 do
             local nextY   = currentBatchY - step
@@ -1037,6 +1056,19 @@ local function RunCycle()
             else break end
         end
         SetStatus("BATCH START "..CFG.batchStart.."  Y="..currentBatchY, Color3.fromRGB(180,255,200))
+    end
+
+    -- Navigate to correct position after resume
+    if restoredBatchY then
+        SetStatus("RESUMING: navigating to Y="..currentBatchY, Color3.fromRGB(180,220,255))
+        task.wait(0.5)
+        local _,curY = GetTileIndex()
+        if curY and curY < currentBatchY then
+            climbToY(currentBatchY, function() return isRunning and not inst.dead end)
+        end
+        walkToX(CFG.farmStartX or 1, function() return isRunning and not inst.dead end)
+        SetStatus("RESUMING: at position, starting", Color3.fromRGB(150,255,180))
+        task.wait(0.3)
     end
 
     ensureWatching()
@@ -1341,7 +1373,7 @@ local function RefreshSavedList()
     for _,c in pairs(savedFrame:GetChildren()) do
         if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
     end
-    local all = loadAllSaves()
+    local all = loadAllSaves()  -- uses PROGRESS_FILE
     local names = {}
     for name,_ in pairs(all) do table.insert(names, name) end
     table.sort(names)
