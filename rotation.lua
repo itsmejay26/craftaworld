@@ -1084,10 +1084,22 @@ local function RunCycle()
     -- Navigate to correct position after resume
     if restoredBatchY then
         if resumePhase == "Breaking" or resumePhase == "Planting" then
-            -- Skip harvest entirely — go straight down to break floor
-            SetStatus("RESUMING: going to break floor", Color3.fromRGB(180,220,255))
+            -- Always go right side (x100) and fall to break floor, same as RunBreak
+            SetStatus("RESUMING: going right side to break floor", Color3.fromRGB(180,220,255))
             task.wait(0.3)
-            descendToY(BREAK_FLOOR_Y, function() return isRunning and not inst.dead end)
+            walkToX(100, function() return isRunning and not inst.dead end)
+            local lr = tick(); pressKey(Enum.KeyCode.D)
+            while isRunning and not inst.dead do
+                local _,cy = GetTileIndex()
+                if cy and cy <= BREAK_FLOOR_Y then
+                    releaseKey(Enum.KeyCode.D); stopAll(); task.wait(0.15); break
+                end
+                if tick()-lr >= MOVE_REFRESH then
+                    releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D); lr=tick()
+                end
+                task.wait(0.01)
+            end
+            releaseKey(Enum.KeyCode.D); stopAll()
         else
             -- Harvesting resume — navigate to the correct batch row
             SetStatus("RESUMING: navigating to Y="..currentBatchY, Color3.fromRGB(180,220,255))
