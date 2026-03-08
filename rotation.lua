@@ -213,12 +213,13 @@ local function descendToY(targetY, guardFn)
     local ix,iy = GetTileIndex(); if not ix or not iy then return end
     if iy <= targetY then return end  -- already at or below target
     SetStatus("DESCEND Y="..targetY, Color3.fromRGB(200,160,100)); stopAll(); task.wait(0.05)
-    -- Walk to nearest side wall and walk off to fall down
-    local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
-    walkToX(side, guardFn); if not guardFn() then return end
-    -- Press toward the wall edge to fall off: left wall = press A, right wall = press D
-    local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.A or Enum.KeyCode.D
-    local lr = tick(); pressKey(fallKey)
+    -- Walk off the nearest edge: x0 from left side, x100 from right side
+    local fallX = (ix <= 50) and 0 or 100
+    walkToX(fallX, guardFn); if not guardFn() then return end
+    -- Wait until we've fallen to targetY
+    local lr = tick()
+    local fallKey = (fallX == 0) and Enum.KeyCode.A or Enum.KeyCode.D
+    pressKey(fallKey)
     while guardFn() do
         local _,cy = GetTileIndex()
         if cy and cy <= targetY then releaseKey(fallKey); stopAll(); task.wait(0.15); return end
