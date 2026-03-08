@@ -1,17 +1,19 @@
 --[[
-    ROTATION FARM v3.0
+    ROTATION FARM v3.1 + Discord Webhook Logger
     Harvest -> Break -> Plant -> Grow -> Next Batch -> Repeat
 
-    Harvest Row 1  : center-right (farmStartX->X99) fire rowY
-                   + below-left   (X99->X0)          fire rowY-2
-                     fall at X=0 to row 2
-    Harvest Middle : below-right  (X1->X100)         fire rowY-2
-                     fall at X=100 to next row
-    Harvest Last   : collect-left (X99->X1)          no firing
-                     fall-right   (X1->X100)         drop to break floor
-    Break          : place breakBlocks tile-by-tile, fist back; repeat until inventory empty
-    Plant          : bottom-up per batch; miss = go fix it, return to saved X, resume
-    Batches        : advance DOWNWARD each cycle; wrap to farmStartY when exhausted
+    Webhook Features:
+      • Sends update on every Harvest / Break / Plant phase start
+      • Sends a general update every 10 minutes
+      • Shows Seeds, Blocks, Gems counts
+      • Ping = 0 → Bot marked Offline → @everyone mention
+
+    GUI Additions:
+      • PAUSE / RESUME button
+      • Resume Last Progress (per-player save data)
+      • Stuck detector
+      • Break floor Y detection
+      • Proceed Breaking First option
 ]]
 
 -- ============ SINGLETON ============
@@ -55,22 +57,66 @@ local PLANT_DELAY    = 0.75
 
 -- ============ CONFIG ============
 local CFG = {
-    farmStartX=nil, farmStartY=nil, breakX=70,
+    farmStartX=1, farmStartY=31, breakX=70,
     plantItem=nil,  breakItem=nil,
     rowsPerCycle=3, breakBlocks=26, growTime=5700, skipGrow=false,
-    batchStart=1,  -- which batch number to start from (1 = farmStartY)
+    batchStart=1, breakFirst=false,
 }
 
 -- ============ RUNTIME STATE ============
-local isRunning=false; local currentBatchY=nil; local cycleCount=0; local statusLabel=nil
+local isRunning=false; local isPaused=false; local currentBatchY=31; local cycleCount=0; local statusLabel=nil
+local pauseBtn=nil  -- reference set later in GUI section
+local stuckTargetY=nil  -- updated by harvest/collect phases; used by stuck detector
+local resumeEnabled = false       -- whether to resume last progress on START
+local resumeTargetPlayer = nil    -- which player's save to resume (nil = current player)
 local function SetStatus(t,c) if statusLabel then statusLabel.Text=t; statusLabel.TextColor3=c or Color3.fromRGB(200,255,210) end end
+
+
+-- ============ WEBHOOK CONFIG ============
+local WEBHOOK_URL            = 'https://discord.com/api/webhooks/1478674196371603620/lF9xgNWK91ihoUPluoOn_IKUA_PkhI8cixgsBy921Ipib_Oi58wMktfStt9cqQEhr-uE'
+local WH_BOT_USERNAME        = Players.LocalPlayer.Name
+local WH_GENERAL_INTERVAL    = 600  -- 10 minutes between general updates
+
+-- ============ WEBHOOK HELPERS ============
+local function whRequest(payload)
+    local reqFn = (syn and syn.request)
+               or (http_request and http_request)
+               or (request and request)
+    if not reqFn then return end
+    pcall(reqFn, {
+        Url     = WEBHOOK_URL,
+        Method  = 'POST',
+        Headers = { ['Content-Type'] = 'application/json' },
+        Body    = HttpService:JSONEncode(payload),
+    })
+end
+
+local function whGetPingMs()
+    local ok, val = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and val and val > 0 then return math.floor(val) end
+    local t0 = tick()
+    RunSvc.Heartbeat:Wait()
+    local ms = math.floor((tick() - t0) * 1000)
+    return ms > 0 and ms or 0
+end
+
+local function whGetGems()
+    local ok, result = pcall(function()
+        return Players.LocalPlayer.PlayerGui.GemsUI.Frame.TextLabel.Text
+    end)
+    return ok and result ~= "" and result or "N/A"
+end
+
+-- (whSend defined after slot helpers so GetTotalByCode is in scope)
 
 -- ============ SAFE MODE STATE ============
 local safeAutoStop  = false
 local safeAutoLeave = false
 local isMinimized   = false
 local SAVE_FILE     = "RotFarm_Whitelist.json"
-local whitelist     = {"54321_jaymes"}  -- default entry
+local whitelist     = {"54321_jaymes"}
 
 local function SaveWhitelist()
     pcall(function()
@@ -92,7 +138,6 @@ local function IsWhitelisted(name)
     return false
 end
 LoadWhitelist()
--- ensure default is always present
 local function EnsureDefault()
     if not IsWhitelisted("54321_jaymes") then
         table.insert(whitelist,1,"54321_jaymes"); SaveWhitelist()
@@ -212,6 +257,83 @@ local function GetTotalByCode(code)
     end; return tot
 end
 
+-- ============ PER-PLAYER SAVE / LOAD ============
+local SAVE_FILE = "RotFarm_SaveData.json"
+local currentPlayerName = player.Name
+
+local function loadAllSaves()
+    local ok, data = pcall(function()
+        local raw = readfile(SAVE_FILE)
+        return game:GetService("HttpService"):JSONDecode(raw)
+    end)
+    return (ok and type(data)=="table") and data or {}
+end
+
+local function saveAllSaves(data)
+    pcall(function()
+        writefile(SAVE_FILE, game:GetService("HttpService"):JSONEncode(data))
+    end)
+end
+
+-- Save current progress for a given player (uses their raw slot key, not runtime code)
+local function saveProgress(phase)
+    pcall(function()
+        local all = loadAllSaves()
+        -- Resolve raw slot keys from current runtime codes so they survive restarts
+        local plantKey, breakKey = nil, nil
+        if CFG.plantItem then
+            for _,slot in pairs(invScroll:GetChildren()) do
+                if tonumber(slot.Name) then
+                    local k = GetSlotKey(slot)
+                    if k and GetCode(k) == CFG.plantItem then plantKey = k; break end
+                end
+            end
+        end
+        if CFG.breakItem then
+            for _,slot in pairs(invScroll:GetChildren()) do
+                if tonumber(slot.Name) then
+                    local k = GetSlotKey(slot)
+                    if k and GetCode(k) == CFG.breakItem then breakKey = k; break end
+                end
+            end
+        end
+        all[currentPlayerName] = {
+            farmStartX   = CFG.farmStartX,
+            farmStartY   = CFG.farmStartY,
+            currentBatchY= currentBatchY,
+            breakX       = CFG.breakX,
+            rowsPerCycle = CFG.rowsPerCycle,
+            plantItemKey = plantKey,
+            breakItemKey = breakKey,
+            lastPhase    = phase,
+            cycleCount   = cycleCount,
+            timestamp    = os.time(),
+        }
+        saveAllSaves(all)
+    end)
+end
+
+-- Restore a saved player's data into CFG and runtime state
+-- Returns true if successful, false otherwise
+local function applyPlayerSave(username)
+    local all = loadAllSaves()
+    local d = all[username]
+    if not d then return false end
+    CFG.farmStartX   = d.farmStartX   or CFG.farmStartX
+    CFG.farmStartY   = d.farmStartY   or CFG.farmStartY
+    CFG.breakX       = d.breakX       or CFG.breakX
+    CFG.rowsPerCycle = d.rowsPerCycle or CFG.rowsPerCycle
+    currentBatchY    = d.currentBatchY or CFG.farmStartY
+    -- Re-resolve item codes from saved raw slot keys
+    if d.plantItemKey then
+        CFG.plantItem = GetCode(d.plantItemKey)
+    end
+    if d.breakItemKey then
+        CFG.breakItem = GetCode(d.breakItemKey)
+    end
+    return true, d
+end
+
 -- ============ WORLD TILE TRACKING ============
 local worldTileSet={}
 local function wTE(pX,pY) return worldTileSet[pX..","..pY]==true end
@@ -258,50 +380,29 @@ local function stopWatching() for _,c in ipairs(mCn) do c:Disconnect() end; mCn=
 local function ensureWatching() if not worldWatching then fullScan(); startWatching(); worldWatching=true end end
 
 -- ============================================================
---  HARVEST  (fixed sweep pattern)
---
---  Row 1 (first):
---    Pass 1 RIGHT  farmStartX -> X99   fire at rowY   (center)
---    Pass 2 LEFT   X99 -> X0           fire at rowY-2 (below)
---    handleBoundary(false) at X=0 -> fall to row 2
---
---  Middle rows (ri 2..N-1):
---    RIGHT   X1 -> X100    fire at rowY-2 (below)
---    handleBoundary(true) at X=100 -> fall to next row
---
---  Last row (ri N):
---    Collect LEFT  X99 -> X1  (no firing, just pick up drops)
---    Fall RIGHT    X1 -> X100 -> drop to break floor
---
---  Single row: Pass1+Pass2 then fall right to break floor.
+--  HARVEST
 -- ============================================================
 local function RunHarvest(rows, guardFn, refY)
+    -- Force a fresh tile scan every harvest to ensure worldTileSet is current.
+    -- Without this, tiles planted after the initial scan may not be registered,
+    -- causing hFire to silently skip rows where wTE returns false.
+    fullScan()
     ensureWatching()
-
-    -- ── Miss tracking (same logic as RunPlant) ────────────────────────
-    -- After firing fstR at a tile, we wait HARVEST_MISS_DELAY seconds.
-    -- If the tile (wTE) is STILL there after that delay, it's a miss:
-    -- we stop, walk to it, fire several more times, walk back, resume.
     local HARVEST_MISS_DELAY = 0.65
     local hPending = {}
     local hIgnored = {}
     local function hIsIgn(x,y) return hIgnored[x..","..y]==true end
     local function hIgn(x,y)   hIgnored[x..","..y]=true end
     local function hClearPending() hPending={} end
-
-    -- Queue a fire event and track the tile for miss detection.
     local function hFire(ix, targetY)
         if ix>=1 and ix<99 and wTE(ix,targetY) and not hIsIgn(ix,targetY) then
             fstR:FireServer(Vector2.new(ix,targetY))
-            -- Don't duplicate-track the same tile
             for _,p in ipairs(hPending) do
                 if p.x==ix and p.y==targetY then return end
             end
             table.insert(hPending, {x=ix, y=targetY, timestamp=tick()})
         end
     end
-
-    -- Returns the first expired pending tile that is still present (miss), or nil.
     local function getMiss()
         local now=tick()
         for i=#hPending,1,-1 do
@@ -309,17 +410,14 @@ local function RunHarvest(rows, guardFn, refY)
             if now-p.timestamp >= HARVEST_MISS_DELAY then
                 table.remove(hPending,i)
                 if not wTE(p.x,p.y) then
-                    hIgn(p.x,p.y)           -- already broken, good
+                    hIgn(p.x,p.y)
                 elseif not hIsIgn(p.x,p.y) then
-                    return p.x, p.y         -- still present = miss
+                    return p.x, p.y
                 end
             end
         end
         return nil,nil
     end
-
-    -- Walk to missX, fire multiple times, mark ignored, walk back to resumeX.
-    -- resumeRowY is used to climb back if we fell during the detour.
     local function fixHarvestMiss(missX, missY, resumeX, resumeRowY, gFn)
         stopAll(); SetStatus("H-MISS X="..missX, Color3.fromRGB(255,130,50))
         local _,cy = GetTileIndex()
@@ -337,30 +435,23 @@ local function RunHarvest(rows, guardFn, refY)
         if resumeX then walkToX(resumeX, gFn); if not gFn() then return false end end
         return true
     end
-    -- ─────────────────────────────────────────────────────────────────
 
-    -- Position at top row
     local _,iy = GetTileIndex()
     if iy and iy < rows[1] then climbToY(rows[1],guardFn); if not guardFn() then return false end end
     walkToX(CFG.farmStartX or 1, guardFn); if not guardFn() then return false end
 
     for ri, rowY in ipairs(rows) do
         if not guardFn() then return false end
+        stuckTargetY = rowY  -- tell stuck detector which row we're working on
         local isFirst = (ri == 1)
         local isLast  = (ri == #rows)
         local belowY  = rowY - 2
         local lr
 
-        -- Y sanity check
         local _,curY = GetTileIndex()
         if curY and curY < rowY then climbToY(rowY,guardFn); if not guardFn() then return false end end
 
-        -- ══════════════════════════════════════════════════════
-        --  FIRST ROW: Pass1 center RIGHT + Pass2 below LEFT
-        -- ══════════════════════════════════════════════════════
         if isFirst then
-
-            -- Pass 1: RIGHT farmStartX -> X99, fire at rowY
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." CTR ->", Color3.fromRGB(255,200,80))
             lr = tick(); startMoveRight()
@@ -384,7 +475,6 @@ local function RunHarvest(rows, guardFn, refY)
             end
             stopAll(); if not guardFn() then return false end
 
-            -- Pass 2: LEFT X99 -> X0, fire at belowY
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." BLW <-", Color3.fromRGB(220,160,60))
             lr=tick(); startMoveLeft(); local fellEarlyP2=false
@@ -407,7 +497,6 @@ local function RunHarvest(rows, guardFn, refY)
             end
             stopAll(); if not guardFn() then return false end
 
-            -- Recover unexpected mid-sweep fall in pass 2
             if fellEarlyP2 then
                 climbToY(rowY,guardFn); if not guardFn() then return false end
                 walkToX(JUMP_RIGHT,guardFn); if not guardFn() then return false end
@@ -448,38 +537,87 @@ local function RunHarvest(rows, guardFn, refY)
                 stopAll(); if not guardFn() then return false end
             end
 
-        -- ══════════════════════════════════════════════════════
-        --  LAST ROW (y=9): collect drops LEFT X99->X1.
-        --  If the player lands on the wrong row at ANY point,
-        --  climb back to rowY, walk to fallX, resume left.
-        --  Only after reaching X1 do we walk right to break floor.
-        -- ══════════════════════════════════════════════════════
         elseif isLast then
-
             walkToX(JUMP_RIGHT,guardFn); if not guardFn() then return false end
 
-            SetStatus("COLLECT "..ri.."/"..#rows.." <- Y="..rowY, Color3.fromRGB(80,220,255))
-            lr=tick(); startMoveLeft()
-            while guardFn() do
-                local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
+            -- If we already fell off the row immediately after walking to x99
+            -- (tiles at this Y were already cleared by the middle row's below-pass),
+            -- skip the collect sweep entirely and go straight to break floor.
+            local _,postWalkY = GetTileIndex()
+            local doCollect = not (postWalkY and postWalkY < rowY)
 
-                -- Wrong row: climb back, resume from fallX
-                if iy2 and iy2 ~= rowY then
-                    stopAll()
-                    local fallX = math.max(ix, JUMP_LEFT)
-                    climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(fallX, guardFn); if not guardFn() then return false end
-                    lr=tick(); startMoveLeft(); continue
+            if doCollect then
+                SetStatus("COLLECT "..ri.."/"..#rows.." <- Y="..rowY, Color3.fromRGB(80,220,255))
+                local climbRetries = 0
+                local resumeX = JUMP_RIGHT  -- start from right side, sweeping left
+                lr = tick(); startMoveLeft()
+                while guardFn() do
+                    -- Always verify Y position before doing anything each iteration
+                    local ix, iy2 = GetTileIndex()
+                    if not ix then task.wait(0.01); continue end
+
+                    -- Wrong Y: stop immediately, go to nearest side, climb back up
+                    if not iy2 or iy2 ~= rowY then
+                        stopAll()
+                        climbRetries += 1
+                        if climbRetries > 6 then
+                            SetStatus("COLLECT: can't reach Y="..rowY..", skipping", Color3.fromRGB(200,160,80))
+                            break
+                        end
+                        SetStatus("COLLECT: wrong Y="..tostring(iy2).." -> climbing to "..rowY, Color3.fromRGB(200,160,80))
+                        -- Save where we fell from, then skip 2 tiles past it to avoid re-falling on the same gap
+                        local fellAtX = ix or JUMP_RIGHT
+                        local safeResumeX = math.max(JUMP_LEFT + 1, fellAtX - 2)
+                        -- Walk to nearest side wall first so climbToY has solid ground
+                        local side = (fellAtX <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        walkToX(side, guardFn); if not guardFn() then return false end
+                        -- Use the proven climbToY to get back to rowY
+                        climbToY(rowY, guardFn); if not guardFn() then return false end
+                        -- Walk to 2 tiles past where we fell (not back to the exact gap)
+                        walkToX(safeResumeX, guardFn); if not guardFn() then return false end
+                        lr = tick(); startMoveLeft()
+                        continue
+                    end
+
+                    -- On correct Y — check if we've reached the left boundary
+                    climbRetries = 0
+                    if ix <= JUMP_LEFT then stopAll(); break end
+                    if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
+                    -- Break any missed harvest tree at ix-1 while sweeping left
+                    if ix > 1 then fstR:FireServer(Vector2.new(ix - 1, iy2)) end
+                    task.wait(0.01)
                 end
-
-                if ix <= JUMP_LEFT then stopAll(); break end
-                if tick()-lr >= MOVE_REFRESH then startMoveLeft(); lr=tick() end
-                task.wait(0.01)
+                stopAll(); if not guardFn() then return false end
             end
-            stopAll(); if not guardFn() then return false end
 
             SetStatus("-> BREAK FLOOR", Color3.fromRGB(255,100,80))
-            walkToX(JUMP_LEFT,guardFn); if not guardFn() then return false end
+            -- Walk to x1 first, with Y correction if we accidentally fall mid-walk
+            do
+                local reachedX1 = false
+                local retries = 0
+                while guardFn() and not reachedX1 do
+                    local ix, iy2 = GetTileIndex()
+                    if not ix then task.wait(0.01); continue end
+                    -- If we fell to a wrong intermediate row, climb back to rowY and retry
+                    if iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y then
+                        stopAll()
+                        retries += 1
+                        if retries > 5 then break end -- give up, just fall to break floor naturally
+                        SetStatus("-> BF: fell to Y="..iy2.." -> climb back", Color3.fromRGB(200,120,60))
+                        local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+                        walkToX(side, guardFn); if not guardFn() then return false end
+                        climbToY(rowY, guardFn); if not guardFn() then return false end
+                        walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
+                    end
+                    if ix <= JUMP_LEFT then reachedX1 = true; stopAll(); break end
+                    if not (iy2 and iy2 ~= rowY and iy2 > BREAK_FLOOR_Y) then
+                        pressKey(Enum.KeyCode.A)
+                    end
+                    task.wait(0.01)
+                end
+                releaseKey(Enum.KeyCode.A); stopAll()
+                if not guardFn() then return false end
+            end
             lr=tick(); startMoveRight()
             while guardFn() do
                 local _,iy2 = GetTileIndex()
@@ -489,14 +627,9 @@ local function RunHarvest(rows, guardFn, refY)
             end
             stopAll(); if not guardFn() then return false end
 
-        -- ══════════════════════════════════════════════════════
-        --  MIDDLE ROW: RIGHT sweep below, fall RIGHT to next row
-        -- ══════════════════════════════════════════════════════
         else
-
             hClearPending()
             walkToX(JUMP_LEFT,guardFn); if not guardFn() then return false end
-
             SetStatus("HARVEST "..ri.."/"..#rows.." BLW ->", Color3.fromRGB(220,160,60))
             lr=tick(); startMoveRight()
             while guardFn() do
@@ -519,7 +652,6 @@ local function RunHarvest(rows, guardFn, refY)
                 task.wait(0.01)
             end
             stopAll(); if not guardFn() then return false end
-
             local res,_ = handleBoundary(true,guardFn,refY)
             if res=="stopped" then return false end
             task.wait(0.1)
@@ -529,18 +661,66 @@ local function RunHarvest(rows, guardFn, refY)
 end
 
 -- ============================================================
---  BREAK  (multi-pass: place exactly CFG.breakBlocks tile-by-tile,
---          fist back, repeat until inventory is empty.
---          All waits are minimal for maximum speed.)
+--  BREAK
 -- ============================================================
 local function RunBreak(guardFn)
     if not CFG.breakX then SetStatus("BREAK: No X set!", Color3.fromRGB(255,80,80)); return false end
+
+    -- ── Ensure bot is on the break floor (Y=BREAK_FLOOR_Y) before anything ──
+    do
+        local ix, iy = GetTileIndex()
+        if iy and iy ~= BREAK_FLOOR_Y then
+            SetStatus("BREAK: not on floor Y="..BREAK_FLOOR_Y..", going down", Color3.fromRGB(220,150,50))
+            -- Walk to nearest side wall, then walk off or fall down to break floor
+            local side = (ix and ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+            walkToX(side, guardFn); if not guardFn() then return false end
+            -- Move toward the opposite edge to fall off and land on break floor
+            local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.D or Enum.KeyCode.A
+            local lr = tick(); pressKey(fallKey)
+            while guardFn() do
+                local _,cy = GetTileIndex()
+                if cy and cy <= BREAK_FLOOR_Y then
+                    releaseKey(fallKey); stopAll(); task.wait(0.15); break
+                end
+                if tick()-lr >= MOVE_REFRESH then
+                    releaseKey(fallKey); task.wait(0.01); pressKey(fallKey); lr=tick()
+                end
+                task.wait(0.01)
+            end
+            releaseKey(fallKey); stopAll()
+            if not guardFn() then return false end
+            -- Confirm we are now on break floor
+            local _,cy = GetTileIndex()
+            if cy and cy ~= BREAK_FLOOR_Y then
+                SetStatus("BREAK: still wrong Y="..tostring(cy)..", retrying", Color3.fromRGB(255,80,80))
+                task.wait(0.5)
+            end
+        end
+    end
+
     SetStatus("BREAK -> X="..CFG.breakX, Color3.fromRGB(220,150,50))
-    walkToX(CFG.breakX,guardFn); if not guardFn() then return false end
+    -- Walk to break position while fisting tiles at ix-1 along the way
+    do
+        local ix, iy = GetTileIndex()
+        if ix and iy and ix ~= CFG.breakX then
+            local goRight = ix < CFG.breakX
+            local key = goRight and Enum.KeyCode.D or Enum.KeyCode.A
+            local lr = tick(); pressKey(key)
+            while guardFn() do
+                ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
+                if goRight  and ix >= CFG.breakX then break end
+                if not goRight and ix <= CFG.breakX then break end
+                if tick() - lr >= MOVE_REFRESH then releaseKey(key); task.wait(0.01); pressKey(key); lr = tick() end
+                fstR:FireServer(Vector2.new(ix - 1, iy))
+                task.wait(0.02)
+            end
+            releaseKey(key); stopAll()
+            if not guardFn() then return false end
+        end
+    end
     local breakStartX = GetTileIndex() or CFG.breakX
     local passNum = 0
 
-    -- Fast inventory poll: sample a few times with tiny gaps to let server sync.
     local function pollTotal(timeout)
         local deadline = tick() + (timeout or 0.2)
         local prev = -1
@@ -560,34 +740,22 @@ local function RunBreak(guardFn)
         end
 
         passNum += 1
-        -- Always try to place the full breakBlocks count; cap at what we have.
         local toPlace = math.min(CFG.breakBlocks, total)
-
         walkToX(breakStartX,guardFn); if not guardFn() then return false end
         local _,iy0 = GetTileIndex(); iy0 = iy0 or BREAK_FLOOR_Y
 
-        -- ── PLACE: move right continuously, one block per unique tile ─
-        --  Reference-style movement (startMoveRight once, key refresh),
-        --  but guarded by lastPlacedX so only ONE block is fired per
-        --  tile — guaranteeing exactly toPlace (default 26) total blocks.
         SetStatus("BREAK P"..passNum..": PLACE "..toPlace.." ->", Color3.fromRGB(85,215,110))
         local placed     = 0
         local placeEndX  = breakStartX
-        local lastPlacedX = -999   -- tracks last tile a block was placed on
+        local lastPlacedX = -999
 
         local lr = tick(); startMoveRight()
         while guardFn() do
             local ix, iy = GetTileIndex()
             if not ix then task.wait(0.01); continue end
             iy = iy or iy0
-
-            -- Done or hit boundary
             if placed >= toPlace or ix >= TRAVERSE_RIGHT then break end
-
-            -- Keep movement key alive (reference pattern)
             if tick() - lr >= MOVE_REFRESH then startMoveRight(); lr = tick() end
-
-            -- Only place once per tile (ix - 1 offset, same as reference)
             if ix ~= lastPlacedX then
                 local slotN = FindSlotByCode(CFG.breakItem)
                 if slotN then
@@ -596,10 +764,9 @@ local function RunBreak(guardFn)
                     placeEndX  = ix
                     lastPlacedX = ix
                 else
-                    break  -- inventory empty mid-pass
+                    break
                 end
             end
-
             task.wait(0.01)
         end
         releaseKey(Enum.KeyCode.D); stopAll()
@@ -612,7 +779,6 @@ local function RunBreak(guardFn)
             continue
         end
 
-        -- ── FIST: walk left from placeEndX back to breakStartX ───────
         SetStatus("BREAK P"..passNum..": FIST <- "..placed, Color3.fromRGB(220,150,50))
         walkToX(placeEndX, guardFn); if not guardFn() then return false end
         local lr = tick(); startMoveLeft()
@@ -624,7 +790,6 @@ local function RunBreak(guardFn)
         end
         releaseKey(Enum.KeyCode.A); stopAll()
 
-        -- Quick settle then check remaining
         task.wait(0.1)
         local remaining = pollTotal(0.2)
         if remaining <= 0 then
@@ -637,16 +802,7 @@ local function RunBreak(guardFn)
 end
 
 -- ============================================================
---  PLANT: bottom-up per batch, direction from nearest edge.
---
---  Key rules:
---    • sweepRight is NEVER changed after the initial climb.
---      Fall recovery climbs back up and resumes from fallX in the
---      same direction — it never resets to X=99/X=1.
---    • Miss recovery: go fix missX, then walk back to resumeX
---      (the position we held before the detour) and continue.
---      If the player falls while returning, the fall recovery
---      walks back to resumeX as well, keeping direction intact.
+--  PLANT
 -- ============================================================
 local function RunPlant(rows, guardFn, refY)
     ensureWatching()
@@ -658,7 +814,6 @@ local function RunPlant(rows, guardFn, refY)
         local rowY=rows[pi]; if not guardFn() then return false end
         SetStatus("PLANT "..(#rows-pi+1).."/"..#rows.." Y="..rowY, Color3.fromRGB(85,215,110))
 
-        -- Climb to the row and decide initial direction once.
         local _,fromRight = climbToY(rowY,guardFn); if not guardFn() then return false end
         local _,curY = GetTileIndex()
         if curY and curY < rowY then
@@ -666,41 +821,30 @@ local function RunPlant(rows, guardFn, refY)
             local ax=GetTileIndex(); fromRight = ax and ax>=50 or false
         end
 
-        -- sweepRight is set here and NEVER overwritten during this row.
         local sweepRight = not fromRight
         SetStatus("PLANT "..(#rows-pi+1).."/"..#rows..(sweepRight and " ->" or " <-"), Color3.fromRGB(85,215,110))
 
-        -- resumeAfterFall: when non-nil, after climbing back up the
-        -- fall-recovery walks to this X before resuming the sweep.
         local resumeAfterFall = nil
-
         local lr=tick()
         if sweepRight then startMoveRight() else startMoveLeft() end
 
         while guardFn() do
             local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
 
-            -- ── Fell to wrong row ──────────────────────────────────────
-            -- Climb back, walk to fallX (or resumeAfterFall if set),
-            -- then continue in the SAME sweepRight direction.
-            -- We deliberately do NOT change sweepRight here.
             if iy2 and iy2 < rowY then
                 stopAll()
-                local fallX = resumeAfterFall or ix   -- where to resume after climb
+                local fallX = resumeAfterFall or ix
                 climbToY(rowY, guardFn); if not guardFn() then return false end
-                -- Walk to the position we had before falling, not the edge.
                 walkToX(fallX, guardFn); if not guardFn() then return false end
-                resumeAfterFall = nil   -- consumed
+                resumeAfterFall = nil
                 lr = tick()
                 if sweepRight then startMoveRight() else startMoveLeft() end
                 continue
             end
 
-            -- ── Sweep boundary ─────────────────────────────────────────
             if sweepRight     and ix >= TRAVERSE_RIGHT then stopAll(); break end
             if not sweepRight and ix <= TRAVERSE_LEFT  then stopAll(); break end
 
-            -- ── Miss check ─────────────────────────────────────────────
             local now=tick(); local missX,missY=nil,nil
             for i=#pending,1,-1 do local p=pending[i]
                 if now-p.timestamp >= PLANT_DELAY then
@@ -716,25 +860,12 @@ local function RunPlant(rows, guardFn, refY)
 
             if missX then
                 stopAll(); SetStatus("P-MISS X="..missX, Color3.fromRGB(255,180,80))
-
-                -- Remember where we are NOW — this is where we must
-                -- return after fixing the miss so the sweep continues
-                -- forward from the correct position.
                 local resumeX, recY = GetTileIndex()
-
-                -- If we somehow fell before the miss was detected,
-                -- climb back up first.
                 if recY and missY and recY < missY then
                     climbToY(missY, guardFn); if not guardFn() then return false end
                     resumeX = GetTileIndex()
                 end
-
-                -- Set the fall-recovery target so that if we fall
-                -- while walking to/from missX, we come back to resumeX
-                -- and NOT to the sweep start edge.
                 resumeAfterFall = resumeX
-
-                -- Go plant the missed tile.
                 walkToX(missX, guardFn); if not guardFn() then return false end
                 for _=1,5 do
                     local s=FindSlotByCode(CFG.plantItem)
@@ -743,26 +874,19 @@ local function RunPlant(rows, guardFn, refY)
                 end
                 ign(missX,missY)
                 if not guardFn() then return false end
-
-                -- Walk back to resumeX (our pre-detour position) and
-                -- continue sweeping in the same direction.
-                -- If we fall during this walk, resumeAfterFall ensures
-                -- the fall handler brings us back here, not to the edge.
                 if resumeX then
                     walkToX(resumeX, guardFn); if not guardFn() then return false end
                 end
-                resumeAfterFall = nil   -- cleared once we've arrived
+                resumeAfterFall = nil
                 lr=tick()
                 if sweepRight then startMoveRight() else startMoveLeft() end
                 continue
             end
 
-            -- ── Keep movement key refreshed ────────────────────────────
             if tick()-lr >= MOVE_REFRESH then
                 if sweepRight then startMoveRight() else startMoveLeft() end; lr=tick()
             end
 
-            -- ── Plant on empty active tiles ────────────────────────────
             if iy2 and ix>0 and ix<100 and iy2>BREAK_FLOOR_Y and (refY-iy2)%2==0
                and not isIgn(ix,iy2) and not wTE(ix,iy2) then
                 local slotN=FindSlotByCode(CFG.plantItem)
@@ -791,30 +915,77 @@ local function RunGrowWait(guardFn)
 end
 
 -- ============================================================
---  BATCH ADVANCEMENT  (go DOWN each cycle, wrap to farmStartY)
---
---  Example: farmStartY=21, rowsPerCycle=3, step=6
---    Batch 1: Y=21  rows={21,19,17}
---    Batch 2: Y=15  rows={15,13,11}
---    Batch 3: Y=9   rows={9}          <- last valid (Y=7 is break floor)
---    Batch 4: nextY=3  no valid rows  -> wrap to Y=21
+--  BATCH ADVANCEMENT
 -- ============================================================
 local function advanceBatch()
     local step    = CFG.rowsPerCycle * 2
-    local nextY   = currentBatchY - step          -- go DOWN
+    local nextY   = currentBatchY - step
     local nextRows= getRows(nextY, CFG.rowsPerCycle, CFG.farmStartY)
     if #nextRows > 0 then
         currentBatchY = nextY
         SetStatus("NEXT BATCH Y="..currentBatchY, Color3.fromRGB(150,255,180))
     else
-        currentBatchY = CFG.farmStartY            -- wrap back to top
+        currentBatchY = CFG.farmStartY
         SetStatus("WRAP -> START Y="..currentBatchY, Color3.fromRGB(180,255,200))
     end
 end
 
 -- ============================================================
---  MAIN CYCLE
---  Harvest (collect+break-floor fall embedded) -> Break -> Plant -> Grow -> Advance
+--  WEBHOOK SEND  (defined here so GetTotalByCode is in scope)
+-- ============================================================
+local function whSend(phase, extraFields)
+    task.spawn(function()
+        local OSTime = os.time()
+        local Time   = os.date('!*t', OSTime)
+        local pingMs = whGetPingMs()
+        local isOnline = pingMs > 0
+
+        local seeds  = CFG.plantItem and GetTotalByCode(CFG.plantItem) or 0
+        local blocks = CFG.breakItem and GetTotalByCode(CFG.breakItem) or 0
+        local gems   = whGetGems()
+        local pingStr = isOnline and (pingMs.."ms") or "N/A"
+
+        local botStatusValue, embedColor, contentMsg
+        if isOnline then
+            botStatusValue = "🟢 Online"
+            embedColor     = 3066993
+            contentMsg     = ""
+        else
+            botStatusValue = "🔴 Offline"
+            embedColor     = 15158332
+            contentMsg     = "@everyone"
+        end
+
+        local fields = {
+            { name = "⚙️ Status",     value = phase,           inline = false },
+            { name = "🤖 Bot Name",   value = WH_BOT_USERNAME, inline = true  },
+            { name = "📡 Bot Status", value = botStatusValue,  inline = true  },
+            { name = "🏓 Bot Ping",   value = pingStr,         inline = true  },
+            { name = "🌱 Seeds",      value = tostring(seeds), inline = true  },
+            { name = "🧱 Blocks",     value = tostring(blocks),inline = true  },
+            { name = "💎 Gems",       value = gems,            inline = true  },
+        }
+        if extraFields then
+            for _, f in ipairs(extraFields) do table.insert(fields, f) end
+        end
+
+        whRequest({
+            content          = contentMsg,
+            embeds           = {{
+                title     = "📋 Rotation Logs",
+                color     = embedColor,
+                fields    = fields,
+                timestamp = string.format('%d-%02d-%02dT%02d:%02d:%02dZ',
+                    Time.year, Time.month, Time.day, Time.hour, Time.min, Time.sec),
+                footer    = { text = "RotFarm v3.0  •  Job: "..tostring(game.JobId):sub(1,8) },
+            }},
+            allowed_mentions = { parse = { "everyone" } },
+        })
+    end)
+end
+
+-- ============================================================
+--  MAIN CYCLE  (with webhook phase calls + pause support)
 -- ============================================================
 local function RunCycle()
     cycleCount=0
@@ -824,10 +995,38 @@ local function RunCycle()
     if not CFG.breakItem then SetStatus("APPLY BREAK ITEM!",Color3.fromRGB(255,80,80)); isRunning=false; return end
 
     local refY=CFG.farmStartY
-    local guard=function() return isRunning and not inst.dead end
+    -- Apply resume last progress if enabled
+    if resumeEnabled then
+        local targetName = resumeTargetPlayer or currentPlayerName
+        local ok, saved = applyPlayerSave(targetName)
+        if ok and saved then
+            SetStatus("RESUMING "..targetName.." ("..tostring(saved.lastPhase)..")", Color3.fromRGB(180,220,255))
+            refY = CFG.farmStartY
+            -- Update GUI labels to reflect restored values
+            pcall(function()
+                if farmLbl then farmLbl.Text="Farm: X="..(CFG.farmStartX or "?").."  Y="..(CFG.farmStartY or "?") end
+                if breakLbl then breakLbl.Text="Break: X="..(CFG.breakX or "?") end
+                if plantItemLbl then plantItemLbl.Text="Plant: "..(saved.plantItemKey and tostring(saved.plantItemKey):sub(1,28) or "NOT SET") end
+                if breakItemLbl then breakItemLbl.Text="Break: "..(saved.breakItemKey and tostring(saved.breakItemKey):sub(1,28) or "NOT SET") end
+            end)
+            task.wait(1)
+        else
+            SetStatus("No save found for "..targetName, Color3.fromRGB(255,180,80))
+            task.wait(1)
+        end
+    end
+    -- guard blocks (spin-waits) while paused so every inner movement loop halts automatically
+    local guard=function()
+        if isPaused and isRunning and not inst.dead then
+            stopAll()
+            while isPaused and isRunning and not inst.dead do
+                SetStatus("⏸ PAUSED", Color3.fromRGB(255,220,80))
+                task.wait(0.05)
+            end
+        end
+        return isRunning and not inst.dead
+    end
 
-    -- Apply one-time batchStart offset: skip (batchStart-1) batches downward.
-    -- After each full cycle the loop always wraps back to farmStartY (batch 1).
     currentBatchY = CFG.farmStartY
     if CFG.batchStart > 1 then
         local step = CFG.rowsPerCycle * 2
@@ -841,6 +1040,63 @@ local function RunCycle()
     end
 
     ensureWatching()
+
+    -- ── Stuck detector ───────────────────────────────────────────
+    -- If bot hasn't moved for 60s: fist ix-1 for 5s, fist ix+1 for 5s,
+    -- walk to nearest side, climbToY(stuckTargetY) to resume correct row.
+    local stuckRecovering = false
+    task.spawn(function()
+        local lastX, lastY = nil, nil
+        local stuckSince   = nil
+        local STUCK_TIME   = 60  -- seconds without movement before recovery
+        local FIST_TIME    = 5   -- seconds to fist each direction
+        while isRunning and not inst.dead do
+            task.wait(0.5)
+            if not isRunning or inst.dead then break end
+            if isPaused or stuckRecovering then
+                stuckSince = nil; lastX, lastY = nil, nil; continue
+            end
+            if not stuckTargetY then stuckSince = nil; continue end
+            local ix, iy = GetTileIndex()
+            if not ix or not iy then stuckSince = nil; continue end
+            if ix == lastX and iy == lastY then
+                stuckSince = stuckSince or tick()
+                if tick() - stuckSince >= STUCK_TIME then
+                    stuckRecovering = true
+                    stuckSince      = nil
+                    stopAll(); task.wait(0.1)
+                    SetStatus("⚠ STUCK — fisting x-1 for 5s", Color3.fromRGB(255,80,80))
+                    local t = tick()
+                    while tick()-t < FIST_TIME do
+                        local fx,fy = GetTileIndex()
+                        if fx and fy then fstR:FireServer(Vector2.new(fx-1, fy)) end
+                        task.wait(0.1)
+                    end
+                    SetStatus("⚠ STUCK — fisting x+1 for 5s", Color3.fromRGB(255,110,50))
+                    t = tick()
+                    while tick()-t < FIST_TIME do
+                        local fx,fy = GetTileIndex()
+                        if fx and fy then fstR:FireServer(Vector2.new(fx+1, fy)) end
+                        task.wait(0.1)
+                    end
+                    local sx = GetTileIndex() or 50
+                    local side = (sx <= 50) and JUMP_LEFT or JUMP_RIGHT
+                    SetStatus("⚠ STUCK — going to side "..side, Color3.fromRGB(255,160,60))
+                    walkToX(side, function() return isRunning and not inst.dead end)
+                    local targetY = stuckTargetY or CFG.farmStartY
+                    SetStatus("⚠ STUCK — climbing to Y="..targetY, Color3.fromRGB(255,200,80))
+                    climbToY(targetY, function() return isRunning and not inst.dead end)
+                    SetStatus("⚠ STUCK — recovered", Color3.fromRGB(150,255,180))
+                    stuckRecovering = false
+                    lastX, lastY = nil, nil
+                end
+            else
+                lastX, lastY = ix, iy
+                stuckSince = nil
+            end
+        end
+    end)
+
     while guard() do
         cycleCount+=1
         local rows=getRows(currentBatchY,CFG.rowsPerCycle,refY)
@@ -849,18 +1105,36 @@ local function RunCycle()
             if #rows==0 then SetStatus("NO VALID ROWS!", Color3.fromRGB(255,80,80)); break end
         end
         SetStatus("CYCLE #"..cycleCount.."  Y="..currentBatchY, Color3.fromRGB(180,255,200))
-        -- 1. Harvest (last row handles collect + fall to break floor)
-        RunHarvest(rows,guard,refY); if not guard() then break end
+
+        -- 1. Harvest (skipped on first cycle if breakFirst is enabled)
+        if cycleCount == 1 and CFG.breakFirst then
+            SetStatus("BREAK FIRST: skipping harvest", Color3.fromRGB(180,200,255))
+            task.wait(0.5)
+        else
+            saveProgress("Harvesting")
+            whSend("Harvesting (cycle #"..cycleCount.."  Y="..currentBatchY..")")
+            RunHarvest(rows,guard,refY); if not guard() then break end
+        end
+
         -- 2. Break
-        RunBreak(guard);             if not guard() then break end
+        saveProgress("Breaking")
+        whSend("Breaking ("..GetTotalByCode(CFG.breakItem).." blocks in inventory)")
+        RunBreak(guard); if not guard() then break end
+
         -- 3. Plant
-        RunPlant(rows,guard,refY);   if not guard() then break end
+        saveProgress("Planting")
+        whSend("Planting ("..GetTotalByCode(CFG.plantItem).." seeds in inventory)")
+        RunPlant(rows,guard,refY); if not guard() then break end
+
         -- 4. Grow wait
-        RunGrowWait(guard);          if not guard() then break end
-        -- 5. Advance to next batch (downward); wraps to farmStartY when exhausted
+        RunGrowWait(guard); if not guard() then break end
+
+        -- 5. Advance
         advanceBatch()
     end
-    isRunning=false; stopAll(); SetStatus("STOPPED", Color3.fromRGB(255,100,100))
+    isRunning=false; isPaused=false
+    if pauseBtn then pauseBtn.Text="⏸ PAUSE"; pauseBtn.BackgroundColor3=Color3.fromRGB(80,80,140) end
+    stopAll(); SetStatus("STOPPED", Color3.fromRGB(255,100,100))
 end
 
 -- ============================================================
@@ -872,16 +1146,15 @@ local sg=Instance.new("ScreenGui",gui); sg.Name="RotFarmGui"; sg.ResetOnSpawn=fa
 
 local WIN_W=250
 local WIN_H_FULL=260
-local WIN_H_MIN=28   -- collapsed = just title bar
+local WIN_H_MIN=28
 
 local main=Instance.new("Frame",sg)
 main.Size=UDim2.new(0,WIN_W,0,WIN_H_FULL)
-main.Position=UDim2.new(0.5,-WIN_W/2,0.05,0)
+main.Position=UDim2.new(0.5,-WIN_W/2,0.5,-WIN_H_FULL/2)
 main.BackgroundColor3=Color3.fromRGB(18,24,20); main.BorderSizePixel=0; main.ClipsDescendants=true
 Instance.new("UICorner",main).CornerRadius=UDim.new(0,10)
 local ms=Instance.new("UIStroke",main); ms.Color=Color3.fromRGB(55,140,70); ms.Thickness=1.5
 
--- Drag (only on title bar so content area doesn't fight it)
 local dragging,dragSt,dragPos=false,nil,nil
 local function attachDrag(bar)
     bar.InputBegan:Connect(function(i)
@@ -896,7 +1169,6 @@ table.insert(inst.connections,UIS.InputChanged:Connect(function(i)
 table.insert(inst.connections,UIS.InputEnded:Connect(function(i)
     if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end))
 
--- Title bar
 local titleBar=Instance.new("Frame",main)
 titleBar.Size=UDim2.new(1,0,0,28); titleBar.BackgroundColor3=Color3.fromRGB(28,42,32); titleBar.BorderSizePixel=0
 Instance.new("UICorner",titleBar).CornerRadius=UDim.new(0,10)
@@ -907,21 +1179,18 @@ local ttxt=Instance.new("TextLabel",titleBar); ttxt.Size=UDim2.new(1,-70,1,0); t
 ttxt.BackgroundTransparency=1; ttxt.Text="RotFarm v3.0"; ttxt.TextColor3=Color3.fromRGB(180,255,195)
 ttxt.TextSize=12; ttxt.Font=Enum.Font.GothamBold; ttxt.TextXAlignment=Enum.TextXAlignment.Left
 
--- Minimize button
 local minBtn=Instance.new("TextButton",titleBar)
 minBtn.Size=UDim2.new(0,20,0,20); minBtn.Position=UDim2.new(1,-47,0.5,-10)
 minBtn.BackgroundColor3=Color3.fromRGB(50,90,60); minBtn.BorderSizePixel=0
 minBtn.Text="−"; minBtn.TextColor3=Color3.fromRGB(180,255,195); minBtn.TextSize=16; minBtn.Font=Enum.Font.GothamBold
 Instance.new("UICorner",minBtn).CornerRadius=UDim.new(0,4)
 
--- Close button
 local xBtn=Instance.new("TextButton",titleBar)
 xBtn.Size=UDim2.new(0,20,0,20); xBtn.Position=UDim2.new(1,-23,0.5,-10)
 xBtn.BackgroundColor3=Color3.fromRGB(160,50,50); xBtn.BorderSizePixel=0
 xBtn.Text="x"; xBtn.TextColor3=Color3.new(1,1,1); xBtn.TextSize=11; xBtn.Font=Enum.Font.GothamBold
 Instance.new("UICorner",xBtn).CornerRadius=UDim.new(0,4)
 
--- Minimize logic
 minBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
     if isMinimized then
@@ -933,13 +1202,11 @@ minBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Scrollable content
 local ct=Instance.new("ScrollingFrame",main); ct.Size=UDim2.new(1,0,1,-28); ct.Position=UDim2.new(0,0,0,28)
 ct.BackgroundTransparency=1; ct.BorderSizePixel=0; ct.ScrollBarThickness=4; ct.ScrollBarImageColor3=Color3.fromRGB(80,150,95)
 ct.ScrollingDirection=Enum.ScrollingDirection.Y; ct.CanvasSize=UDim2.new(0,0,0,0)
 local cpad=Instance.new("UIPadding",ct); cpad.PaddingLeft=UDim.new(0,10); cpad.PaddingRight=UDim.new(0,10); cpad.PaddingTop=UDim.new(0,8); cpad.PaddingBottom=UDim.new(0,12)
 
--- GUI helpers
 local function Lbl(txt,y,h,col,ts,font) local l=Instance.new("TextLabel",ct); l.Size=UDim2.new(1,0,0,h); l.Position=UDim2.new(0,0,0,y); l.BackgroundTransparency=1; l.Text=txt; l.TextColor3=col; l.TextSize=ts; l.Font=font or Enum.Font.Gotham; l.TextXAlignment=Enum.TextXAlignment.Left; return l end
 local function Cap(txt,y) return Lbl(txt,y,12,Color3.fromRGB(100,160,115),9,Enum.Font.GothamBold) end
 local function Inf(txt,y) return Lbl(txt,y,11,Color3.fromRGB(120,170,140),9) end
@@ -970,7 +1237,7 @@ local posLbl=Inf("Pos: --",y); y+=14
 Div(y); y+=8
 
 Cap("FARM START POSITION",y); y+=13
-local farmLbl=Inf("Farm: NOT SET",y); y+=12
+local farmLbl=Inf("Farm: X=1  Y=31 (default)",y); y+=12
 Btn("SET FARM START",y,20,0,1,Color3.fromRGB(45,100,60),function()
     local ix,iy=GetTileIndex()
     if ix and iy then
@@ -998,7 +1265,6 @@ local batchStartLbl=Inf("Start at batch 1  (Y=".. (CFG.farmStartY or "?") ..")",
 Stepper(y,1,1,20,1,function(v)
     CFG.batchStart=v
     if CFG.farmStartY then
-        -- Calculate the Y of the selected batch for preview
         local step=CFG.rowsPerCycle*2
         local previewY=CFG.farmStartY
         for _=1,v-1 do
@@ -1016,10 +1282,16 @@ Cap("HIGHLIGHTED ITEM IN INVENTORY",y); y+=13
 local hlLbl=Inf("Selected: --",y); y+=12
 Btn("APPLY PLANT",y,20,0,0.49,Color3.fromRGB(45,110,70),function()
     if not lastSelSlot then SetStatus("Highlight an item first!",Color3.fromRGB(255,80,80)); return end
-    local k=GetSlotKey(lastSelSlot); if not k then return end; CFG.plantItem=GetCode(k); SetStatus("Plant: "..CFG.plantItem,Color3.fromRGB(85,210,115)) end)
+    local k=GetSlotKey(lastSelSlot); if not k then return end
+    CFG.plantItem=GetCode(k)
+    SetStatus("Plant: "..CFG.plantItem,Color3.fromRGB(85,210,115))
+    if plantItemLbl then plantItemLbl.Text="Plant: "..tostring(k):sub(1,28) end end)
 Btn("APPLY BREAK",y,20,0.51,0.49,Color3.fromRGB(160,100,30),function()
     if not lastSelSlot then SetStatus("Highlight an item first!",Color3.fromRGB(255,80,80)); return end
-    local k=GetSlotKey(lastSelSlot); if not k then return end; CFG.breakItem=GetCode(k); SetStatus("Break: "..CFG.breakItem,Color3.fromRGB(220,180,80)) end); y+=24
+    local k=GetSlotKey(lastSelSlot); if not k then return end
+    CFG.breakItem=GetCode(k)
+    SetStatus("Break: "..CFG.breakItem,Color3.fromRGB(220,180,80))
+    if breakItemLbl then breakItemLbl.Text="Break: "..tostring(k):sub(1,28) end end); y+=24
 
 local plantItemLbl=Inf("Plant: NOT SET",y); y+=12
 local breakItemLbl=Inf("Break: NOT SET",y); y+=14
@@ -1035,10 +1307,119 @@ local growBtn=Btn("GROW TIME: 95 min",y,20,0,1,Color3.fromRGB(55,75,105),nil)
 growBtn.MouseButton1Click:Connect(function() growIdx=(growIdx%#growVals)+1; CFG.growTime=growVals[growIdx]*60; growBtn.Text="GROW TIME: "..growVals[growIdx].." min" end); y+=24
 
 Checkbox("Ignore Growth Time (skip wait)",y,false,function(v) CFG.skipGrow=v end); y+=28
+Checkbox("Proceed Breaking First (skip harvest on start)",y,false,function(v) CFG.breakFirst=v end); y+=28
 Div(y); y+=10
 
-Btn("START",y,26,0,0.48,Color3.fromRGB(40,150,65),function() if isRunning then return end; isRunning=true; task.spawn(RunCycle) end)
-Btn("STOP", y,26,0.52,0.48,Color3.fromRGB(170,50,50),function() isRunning=false; stopAll(); SetStatus("STOPPED",Color3.fromRGB(255,100,100)) end); y+=36
+-- ── RESUME LAST PROGRESS ────────────────────────────────────────
+Div(y); y+=8
+Cap("RESUME LAST PROGRESS",y); y+=13
+
+local resumePlayerLbl = Inf("Player: "..currentPlayerName.." (current)", y); y+=12
+
+-- Checkbox to enable resume
+Checkbox("Resume last progress on START", y, false, function(v)
+    resumeEnabled = v
+end); y+=28
+
+-- Player selector panel (scrollable list of saved players)
+local SAVED_LIST_H = 54
+local savedFrame = Instance.new("ScrollingFrame", ct)
+savedFrame.Size = UDim2.new(1,0,0,SAVED_LIST_H)
+savedFrame.Position = UDim2.new(0,0,0,y)
+savedFrame.BackgroundColor3 = Color3.fromRGB(20,30,24)
+savedFrame.BorderSizePixel = 0
+savedFrame.ScrollBarThickness = 3
+savedFrame.ScrollBarImageColor3 = Color3.fromRGB(60,120,75)
+savedFrame.CanvasSize = UDim2.new(0,0,0,0)
+savedFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+Instance.new("UICorner", savedFrame).CornerRadius = UDim.new(0,5)
+local savedPad = Instance.new("UIPadding", savedFrame)
+savedPad.PaddingLeft = UDim.new(0,4); savedPad.PaddingTop = UDim.new(0,4)
+y += SAVED_LIST_H + 4
+
+local function RefreshSavedList()
+    for _,c in pairs(savedFrame:GetChildren()) do
+        if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+    end
+    local all = loadAllSaves()
+    local names = {}
+    for name,_ in pairs(all) do table.insert(names, name) end
+    table.sort(names)
+    if #names == 0 then
+        local none = Instance.new("TextLabel", savedFrame)
+        none.Size = UDim2.new(1,-8,0,16); none.Position = UDim2.new(0,0,0,0)
+        none.BackgroundTransparency = 1; none.Text = "No saved data yet"
+        none.TextColor3 = Color3.fromRGB(120,140,130); none.TextSize = 9
+        none.Font = Enum.Font.Gotham; none.TextXAlignment = Enum.TextXAlignment.Left
+        savedFrame.CanvasSize = UDim2.new(0,0,0,20); return
+    end
+    local rowH = 18
+    for i, name in ipairs(names) do
+        local saved = all[name]
+        local ts = saved.timestamp and os.date("%m/%d %H:%M", saved.timestamp) or "?"
+        local phase = saved.lastPhase or "?"
+        local btn = Instance.new("TextButton", savedFrame)
+        btn.Size = UDim2.new(1,-8,0,rowH-2)
+        btn.Position = UDim2.new(0,0,0,(i-1)*rowH)
+        btn.BackgroundColor3 = (resumeTargetPlayer == name)
+            and Color3.fromRGB(40,100,65)
+            or  Color3.fromRGB(30,42,35)
+        btn.BorderSizePixel = 0
+        btn.Text = name.."  ["..phase.."]  "..ts
+        btn.TextColor3 = Color3.fromRGB(200,230,210)
+        btn.TextSize = 9; btn.Font = Enum.Font.Gotham
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0,3)
+        btn.MouseButton1Click:Connect(function()
+            resumeTargetPlayer = name
+            resumePlayerLbl.Text = "Player: "..name
+            RefreshSavedList()
+        end)
+    end
+    savedFrame.CanvasSize = UDim2.new(0,0,0,#names*rowH+4)
+end
+
+-- Refresh button
+Btn("↺ REFRESH SAVES", y, 18, 0, 0.49, Color3.fromRGB(40,70,55), function()
+    RefreshSavedList()
+end)
+-- Reset selection to current player button
+Btn("USE MY DATA", y, 18, 0.51, 0.49, Color3.fromRGB(50,80,110), function()
+    resumeTargetPlayer = nil
+    resumePlayerLbl.Text = "Player: "..currentPlayerName.." (current)"
+    RefreshSavedList()
+end); y+=22
+
+RefreshSavedList()
+Div(y); y+=10
+
+-- START / STOP buttons (row 1)
+Btn("START",y,26,0,0.48,Color3.fromRGB(40,150,65),function()
+    if isRunning then return end
+    isPaused=false; isRunning=true
+    if pauseBtn then pauseBtn.Text="⏸ PAUSE"; pauseBtn.BackgroundColor3=Color3.fromRGB(80,80,140) end
+    task.spawn(RunCycle)
+end)
+Btn("STOP",y,26,0.52,0.48,Color3.fromRGB(170,50,50),function()
+    isRunning=false; isPaused=false; stopAll()
+    if pauseBtn then pauseBtn.Text="⏸ PAUSE"; pauseBtn.BackgroundColor3=Color3.fromRGB(80,80,140) end
+    SetStatus("STOPPED",Color3.fromRGB(255,100,100))
+end); y+=30
+
+-- PAUSE / RESUME button (row 2)
+pauseBtn = Btn("⏸ PAUSE",y,22,0,1,Color3.fromRGB(80,80,140),function()
+    if not isRunning then return end
+    isPaused = not isPaused
+    if isPaused then
+        pauseBtn.Text="▶ RESUME"
+        pauseBtn.BackgroundColor3=Color3.fromRGB(40,130,65)
+        stopAll()
+        SetStatus("⏸ PAUSED", Color3.fromRGB(255,220,80))
+    else
+        pauseBtn.Text="⏸ PAUSE"
+        pauseBtn.BackgroundColor3=Color3.fromRGB(80,80,140)
+    end
+end); y+=30
 
 -- ── SAFE MODE ───────────────────────────────────────────────────
 Div(y); y+=8
@@ -1050,11 +1431,8 @@ Div(y); y+=8
 
 -- ── WHITELIST ───────────────────────────────────────────────────
 Cap("WHITELIST",y); y+=13
-
--- Live count label
 local wlCountLbl=Inf("Users: "..#whitelist,y); y+=12
 
--- Names display (scrollable sub-frame)
 local WL_LIST_H=60
 local wlFrame=Instance.new("ScrollingFrame",ct)
 wlFrame.Size=UDim2.new(1,0,0,WL_LIST_H); wlFrame.Position=UDim2.new(0,0,0,y)
@@ -1065,7 +1443,6 @@ Instance.new("UICorner",wlFrame).CornerRadius=UDim.new(0,5)
 local wlPad=Instance.new("UIPadding",wlFrame); wlPad.PaddingLeft=UDim.new(0,6); wlPad.PaddingTop=UDim.new(0,4); wlPad.PaddingBottom=UDim.new(0,4)
 y+=WL_LIST_H+6
 
--- Function to rebuild the whitelist display
 local function RefreshWLDisplay()
     for _,c in pairs(wlFrame:GetChildren()) do
         if c:IsA("TextLabel") then c:Destroy() end
@@ -1082,7 +1459,6 @@ local function RefreshWLDisplay()
 end
 RefreshWLDisplay()
 
--- Add box + button
 local addRow=Instance.new("Frame",ct); addRow.Size=UDim2.new(1,0,0,24); addRow.Position=UDim2.new(0,0,0,y)
 addRow.BackgroundTransparency=1; addRow.BorderSizePixel=0; y+=28
 
@@ -1115,7 +1491,6 @@ end)
 remBtn.MouseButton1Click:Connect(function()
     local name=addBox.Text:match("^%s*(.-)%s*$")
     if name=="" then
-        -- remove last non-default entry
         if #whitelist>1 then
             local removed=table.remove(whitelist)
             SaveWhitelist(); RefreshWLDisplay()
@@ -1123,7 +1498,6 @@ remBtn.MouseButton1Click:Connect(function()
         end
         return
     end
-    -- remove by name, protect default
     if name:lower()=="54321_jaymes" then SetStatus("WL: cannot remove default", Color3.fromRGB(255,160,80)); return end
     for i,n in ipairs(whitelist) do
         if n:lower()==name:lower() then table.remove(whitelist,i); SaveWhitelist(); RefreshWLDisplay()
@@ -1133,7 +1507,6 @@ remBtn.MouseButton1Click:Connect(function()
 end)
 
 Div(y); y+=8
-
 ct.CanvasSize=UDim2.new(0,0,0,y+12)
 
 -- ── Live updaters ────────────────────────────────────────────────
@@ -1169,7 +1542,6 @@ table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
     if safeAutoLeave then
         SetStatus("LEAVING: "..plr.Name.." joined", Color3.fromRGB(255,100,80))
         task.wait(0.2)
-        -- Try Kick first, then TeleportService as fallback
         local kicked = false
         pcall(function() player:Kick("RotFarm Safe Mode: "..plr.Name.." joined"); kicked=true end)
         if not kicked then
@@ -1186,4 +1558,28 @@ xBtn.MouseButton1Click:Connect(function()
     _G.RotFarmV3=nil; sg:Destroy() end)
 
 table.insert(inst.connections,player.CharacterRemoving:Connect(function() stopAll() end))
+
+-- ============================================================
+--  WEBHOOK: 10-minute general update loop
+--  Runs independently — ping = 0 means offline → @everyone
+-- ============================================================
+task.spawn(function()
+    task.wait(5) -- wait for everything to settle
+    -- Send an initial status ping
+    whSend("🔄 Bot started / Script loaded")
+    print("[RotFarm Webhook] Initial update sent.")
+
+    while not inst.dead do
+        task.wait(WH_GENERAL_INTERVAL)
+        if inst.dead then break end
+        -- Determine current phase from status label text
+        local rawStatus = ""
+        pcall(function() rawStatus = statusLabel and statusLabel.Text or "" end)
+        local phase = rawStatus ~= "" and rawStatus or "Idle"
+        whSend("⏱ General Update — " .. phase)
+        print("[RotFarm Webhook] General update sent.")
+    end
+end)
+
 print("[RotFarm v3.0] Ready.")
+print("[RotFarm Webhook] Phase updates on Harvest/Break/Plant. General update every "..math.floor(WH_GENERAL_INTERVAL/60).." min.")
