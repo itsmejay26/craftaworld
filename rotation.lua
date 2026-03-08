@@ -1091,14 +1091,20 @@ local function RunCycle()
 
     -- Navigate to correct position after resume
     if restoredBatchY then
-        SetStatus("RESUMING: navigating to Y="..currentBatchY, Color3.fromRGB(180,220,255))
-        task.wait(0.5)
-        local _,curY = GetTileIndex()
-        if curY and curY < currentBatchY then
-            climbToY(currentBatchY, function() return isRunning and not inst.dead end)
+        if resumePhase == "Breaking" or resumePhase == "Planting" then
+            -- Skip harvest entirely — go straight down to break floor
+            SetStatus("RESUMING: going to break floor", Color3.fromRGB(180,220,255))
+            task.wait(0.3)
+            descendToY(BREAK_FLOOR_Y, function() return isRunning and not inst.dead end)
+        else
+            -- Harvesting resume — navigate to the correct batch row
+            SetStatus("RESUMING: navigating to Y="..currentBatchY, Color3.fromRGB(180,220,255))
+            task.wait(0.5)
+            local _,curY = GetTileIndex()
+            if curY then goToRowY(currentBatchY, function() return isRunning and not inst.dead end) end
+            walkToX(CFG.farmStartX or 1, function() return isRunning and not inst.dead end)
         end
-        walkToX(CFG.farmStartX or 1, function() return isRunning and not inst.dead end)
-        SetStatus("RESUMING: at position, starting", Color3.fromRGB(150,255,180))
+        SetStatus("RESUMING: ready", Color3.fromRGB(150,255,180))
         task.wait(0.3)
     end
 
