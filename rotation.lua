@@ -721,55 +721,47 @@ end
 local function RunBreak(guardFn)
     if not CFG.breakX then SetStatus("BREAK: No X set!", Color3.fromRGB(255,80,80)); return false end
 
-    -- ── Ensure bot is on the break floor (Y=BREAK_FLOOR_Y) before anything ──
+    -- ── Always go to right side (x100), fall down to Y=BREAK_FLOOR_Y ──
     do
-        local ix, iy = GetTileIndex()
+        local _,iy = GetTileIndex()
         if iy and iy ~= BREAK_FLOOR_Y then
-            SetStatus("BREAK: not on floor Y="..BREAK_FLOOR_Y..", going down", Color3.fromRGB(220,150,50))
-            -- Walk to nearest side wall, then walk off or fall down to break floor
-            local side = (ix and ix <= 50) and JUMP_LEFT or JUMP_RIGHT
-            walkToX(side, guardFn); if not guardFn() then return false end
-            -- Move toward the opposite edge to fall off and land on break floor
-            local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.D or Enum.KeyCode.A
-            local lr = tick(); pressKey(fallKey)
+            SetStatus("BREAK: going right side to fall to Y="..BREAK_FLOOR_Y, Color3.fromRGB(220,150,50))
+            walkToX(100, guardFn); if not guardFn() then return false end
+            -- Hold D to walk off right edge and fall
+            local lr = tick(); pressKey(Enum.KeyCode.D)
             while guardFn() do
                 local _,cy = GetTileIndex()
                 if cy and cy <= BREAK_FLOOR_Y then
-                    releaseKey(fallKey); stopAll(); task.wait(0.15); break
+                    releaseKey(Enum.KeyCode.D); stopAll(); task.wait(0.15); break
                 end
                 if tick()-lr >= MOVE_REFRESH then
-                    releaseKey(fallKey); task.wait(0.01); pressKey(fallKey); lr=tick()
+                    releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D); lr=tick()
                 end
                 task.wait(0.01)
             end
-            releaseKey(fallKey); stopAll()
+            releaseKey(Enum.KeyCode.D); stopAll()
             if not guardFn() then return false end
-            -- Confirm we are now on break floor
-            local _,cy = GetTileIndex()
-            if cy and cy ~= BREAK_FLOOR_Y then
-                SetStatus("BREAK: still wrong Y="..tostring(cy)..", retrying", Color3.fromRGB(255,80,80))
-                task.wait(0.5)
-            end
+        else
+            -- Already on break floor — still go to right side to start from there
+            walkToX(JUMP_RIGHT, guardFn); if not guardFn() then return false end
         end
     end
 
     SetStatus("BREAK -> X="..CFG.breakX, Color3.fromRGB(220,150,50))
-    -- Walk to break position while fisting tiles at ix-1 along the way
+    -- Walk from right side toward breakX, fisting at ix-1 along the way
     do
         local ix, iy = GetTileIndex()
-        if ix and iy and ix ~= CFG.breakX then
-            local goRight = ix < CFG.breakX
-            local key = goRight and Enum.KeyCode.D or Enum.KeyCode.A
-            local lr = tick(); pressKey(key)
+        if ix and iy then
+            -- Always coming from right side so always moving left toward breakX
+            local lr = tick(); pressKey(Enum.KeyCode.A)
             while guardFn() do
                 ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                if goRight  and ix >= CFG.breakX then break end
-                if not goRight and ix <= CFG.breakX then break end
-                if tick() - lr >= MOVE_REFRESH then releaseKey(key); task.wait(0.01); pressKey(key); lr = tick() end
+                if ix <= CFG.breakX then break end
+                if tick() - lr >= MOVE_REFRESH then releaseKey(Enum.KeyCode.A); task.wait(0.01); pressKey(Enum.KeyCode.A); lr = tick() end
                 fstR:FireServer(Vector2.new(ix - 1, iy))
                 task.wait(0.02)
             end
-            releaseKey(key); stopAll()
+            releaseKey(Enum.KeyCode.A); stopAll()
             if not guardFn() then return false end
         end
     end
