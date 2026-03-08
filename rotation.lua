@@ -112,8 +112,8 @@ end
 -- (whSend defined after slot helpers so GetTotalByCode is in scope)
 
 -- ============ SAFE MODE STATE ============
-local safeAutoStop  = false
-local safeAutoLeave = false
+local safeAutoStop  = true
+local safeAutoLeave = true
 local isMinimized   = false
 local SAVE_FILE     = "RotFarm_Whitelist.json"
 local whitelist     = {"54321_jaymes"}
@@ -206,6 +206,36 @@ local function climbToY(targetY, guardFn)
         pressKey(Enum.KeyCode.Space); task.wait(JUMP_HOLD); releaseKey(Enum.KeyCode.Space); task.wait(0.2); ja+=1
     end
     ix,iy=GetTileIndex(); return ix,useRight
+end
+
+-- Descend from above: walk off the nearest edge and fall down until reaching targetY
+local function descendToY(targetY, guardFn)
+    local ix,iy = GetTileIndex(); if not ix or not iy then return end
+    if iy <= targetY then return end  -- already at or below target
+    SetStatus("DESCEND Y="..targetY, Color3.fromRGB(200,160,100)); stopAll(); task.wait(0.05)
+    -- Walk to nearest side wall and walk off to fall down
+    local side = (ix <= 50) and JUMP_LEFT or JUMP_RIGHT
+    walkToX(side, guardFn); if not guardFn() then return end
+    local fallKey = (side == JUMP_LEFT) and Enum.KeyCode.D or Enum.KeyCode.A
+    local lr = tick(); pressKey(fallKey)
+    while guardFn() do
+        local _,cy = GetTileIndex()
+        if cy and cy <= targetY then releaseKey(fallKey); stopAll(); task.wait(0.15); return end
+        if tick()-lr >= MOVE_REFRESH then releaseKey(fallKey); task.wait(0.01); pressKey(fallKey); lr=tick() end
+        task.wait(0.01)
+    end
+    releaseKey(fallKey); stopAll()
+end
+
+-- Go to a row Y whether above or below current position
+local function goToRowY(targetY, guardFn)
+    local _,iy = GetTileIndex()
+    if not iy then return end
+    if iy < targetY then
+        climbToY(targetY, guardFn)
+    elseif iy > targetY then
+        descendToY(targetY, guardFn)
+    end
 end
 
 -- ============ HANDLE BOUNDARY ============
@@ -460,7 +490,7 @@ local function RunHarvest(rows, guardFn, refY)
     end
 
     local _,iy = GetTileIndex()
-    if iy and iy < rows[1] then climbToY(rows[1],guardFn); if not guardFn() then return false end end
+    if iy and iy ~= rows[1] then goToRowY(rows[1],guardFn); if not guardFn() then return false end end
     walkToX(CFG.farmStartX or 1, guardFn); if not guardFn() then return false end
 
     for ri, rowY in ipairs(rows) do
@@ -472,7 +502,7 @@ local function RunHarvest(rows, guardFn, refY)
         local lr
 
         local _,curY = GetTileIndex()
-        if curY and curY < rowY then climbToY(rowY,guardFn); if not guardFn() then return false end end
+        if curY and curY ~= rowY then goToRowY(rowY,guardFn); if not guardFn() then return false end end
 
         if isFirst then
             hClearPending()
@@ -837,12 +867,9 @@ local function RunPlant(rows, guardFn, refY)
         local rowY=rows[pi]; if not guardFn() then return false end
         SetStatus("PLANT "..(#rows-pi+1).."/"..#rows.." Y="..rowY, Color3.fromRGB(85,215,110))
 
-        local _,fromRight = climbToY(rowY,guardFn); if not guardFn() then return false end
-        local _,curY = GetTileIndex()
-        if curY and curY < rowY then
-            climbToY(rowY,guardFn); if not guardFn() then return false end
-            local ax=GetTileIndex(); fromRight = ax and ax>=50 or false
-        end
+        goToRowY(rowY, guardFn); if not guardFn() then return false end
+        local ax = GetTileIndex()
+        local _,fromRight = ax, ax and ax >= 50 or false
 
         local sweepRight = not fromRight
         SetStatus("PLANT "..(#rows-pi+1).."/"..#rows..(sweepRight and " ->" or " <-"), Color3.fromRGB(85,215,110))
@@ -854,10 +881,10 @@ local function RunPlant(rows, guardFn, refY)
         while guardFn() do
             local ix,iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
 
-            if iy2 and iy2 < rowY then
+            if iy2 and iy2 ~= rowY then
                 stopAll()
                 local fallX = resumeAfterFall or ix
-                climbToY(rowY, guardFn); if not guardFn() then return false end
+                goToRowY(rowY, guardFn); if not guardFn() then return false end
                 walkToX(fallX, guardFn); if not guardFn() then return false end
                 resumeAfterFall = nil
                 lr = tick()
@@ -1015,12 +1042,14 @@ local function RunCycle()
 
     -- Apply resume FIRST so restored items pass validation below
     local restoredBatchY = nil
+    local resumePhase    = nil  -- "Harvesting" / "Breaking" / "Planting"
     if resumeEnabled then
         local targetName = resumeTargetPlayer or currentPlayerName
         local saved = applyPlayerSave(targetName)
         if saved then
             restoredBatchY = saved.currentBatchY or CFG.farmStartY
-            SetStatus("RESUMING "..targetName.." ("..tostring(saved.lastPhase)..")", Color3.fromRGB(180,220,255))
+            resumePhase    = saved.lastPhase
+            SetStatus("RESUMING "..targetName.." ("..tostring(resumePhase)..")", Color3.fromRGB(180,220,255))
         else
             SetStatus("No save found for "..targetName.." — starting fresh", Color3.fromRGB(255,180,80))
             task.wait(1)
@@ -1138,10 +1167,18 @@ local function RunCycle()
         end
         SetStatus("CYCLE #"..cycleCount.."  Y="..currentBatchY, Color3.fromRGB(180,255,200))
 
-        -- 1. Harvest (skipped on first cycle if breakFirst is enabled)
-        if cycleCount == 1 and CFG.breakFirst then
-            SetStatus("BREAK FIRST: skipping harvest", Color3.fromRGB(180,200,255))
-            task.wait(0.5)
+        -- Determine which phases to skip on first cycle
+        -- resumePhase = the phase that was SAVED (i.e. what it was doing when it crashed)
+        -- so we skip everything BEFORE that phase on the first cycle
+        local skipHarvest = (cycleCount==1) and (CFG.breakFirst or resumePhase=="Breaking" or resumePhase=="Planting")
+        local skipBreak   = (cycleCount==1) and (resumePhase=="Planting")
+        -- After first cycle, clear resumePhase so subsequent cycles run normally
+        if cycleCount==1 then resumePhase=nil end
+
+        -- 1. Harvest
+        if skipHarvest then
+            SetStatus("RESUME: skipping harvest -> ".. (CFG.breakFirst and "break first" or "resuming from "..tostring(resumePhase or "break")), Color3.fromRGB(180,200,255))
+            task.wait(0.3)
         else
             saveProgress("Harvesting")
             whSend("Harvesting (cycle #"..cycleCount.."  Y="..currentBatchY..")")
@@ -1149,9 +1186,14 @@ local function RunCycle()
         end
 
         -- 2. Break
-        saveProgress("Breaking")
-        whSend("Breaking ("..GetTotalByCode(CFG.breakItem).." blocks in inventory)")
-        RunBreak(guard); if not guard() then break end
+        if skipBreak then
+            SetStatus("RESUME: skipping break -> going to plant", Color3.fromRGB(180,200,255))
+            task.wait(0.3)
+        else
+            saveProgress("Breaking")
+            whSend("Breaking ("..GetTotalByCode(CFG.breakItem).." blocks in inventory)")
+            RunBreak(guard); if not guard() then break end
+        end
 
         -- 3. Plant
         saveProgress("Planting")
@@ -1457,8 +1499,8 @@ end); y+=30
 Div(y); y+=8
 Cap("SAFE MODE",y); y+=14
 
-Checkbox("Auto Stop  (stranger joins → stop farm)",y,false,function(v) safeAutoStop=v end); y+=28
-Checkbox("Auto Leave  (stranger joins → leave game)",y,false,function(v) safeAutoLeave=v end); y+=28
+Checkbox("Auto Stop  (stranger joins → stop farm)",y,true,function(v) safeAutoStop=v end); y+=28
+Checkbox("Auto Leave  (stranger joins → leave game)",y,true,function(v) safeAutoLeave=v end); y+=28
 Div(y); y+=8
 
 -- ── WHITELIST ───────────────────────────────────────────────────
