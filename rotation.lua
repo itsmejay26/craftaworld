@@ -493,7 +493,7 @@ local function RunHarvest(rows, guardFn, refY)
 
     local _,iy = GetTileIndex()
     if iy and iy ~= rows[1] then goToRowY(rows[1],guardFn); if not guardFn() then return false end end
-    walkToX(CFG.farmStartX or 1, guardFn); if not guardFn() then return false end
+    walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
 
     for ri, rowY in ipairs(rows) do
         if not guardFn() then return false end
@@ -505,6 +505,8 @@ local function RunHarvest(rows, guardFn, refY)
 
         local _,curY = GetTileIndex()
         if curY and curY ~= rowY then goToRowY(rowY,guardFn); if not guardFn() then return false end end
+        -- Always start each row from the left side
+        walkToX(JUMP_LEFT, guardFn); if not guardFn() then return false end
 
         if isFirst then
             hClearPending()
@@ -1101,12 +1103,12 @@ local function RunCycle()
             end
             releaseKey(Enum.KeyCode.D); stopAll()
         else
-            -- Harvesting resume — navigate to the correct batch row
+            -- Harvesting resume — navigate to the correct batch row then go to left side
             SetStatus("RESUMING: navigating to Y="..currentBatchY, Color3.fromRGB(180,220,255))
             task.wait(0.5)
             local _,curY = GetTileIndex()
             if curY then goToRowY(currentBatchY, function() return isRunning and not inst.dead end) end
-            walkToX(CFG.farmStartX or 1, function() return isRunning and not inst.dead end)
+            walkToX(JUMP_LEFT, function() return isRunning and not inst.dead end)
         end
         SetStatus("RESUMING: ready", Color3.fromRGB(150,255,180))
         task.wait(0.3)
