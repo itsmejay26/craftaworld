@@ -16,6 +16,7 @@ local Players    = game:GetService("Players")
 local RS         = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
+local VIM        = game:GetService("VirtualInputManager")
 local player     = Players.LocalPlayer
 local gui        = player:WaitForChild("PlayerGui")
 local Remotes    = RS:WaitForChild("Remotes")
@@ -220,6 +221,21 @@ end
 local function ensureWatching()
     if not worldWatching then fullScan(); startWatching(); worldWatching=true end
 end
+
+-- ============ ANTI-AFK JUMP ============
+-- Every 60 seconds: hold Space for 2 seconds (same VIM method as rotation script)
+local function pressKey(k)   VIM:SendKeyEvent(true,  k, false, game) end
+local function releaseKey(k) VIM:SendKeyEvent(false, k, false, game) end
+
+task.spawn(function()
+    while not inst.dead do
+        task.wait(60)
+        if inst.dead then break end
+        pressKey(Enum.KeyCode.Space)
+        task.wait(2)
+        releaseKey(Enum.KeyCode.Space)
+    end
+end)
 
 -- ============ GUI HELPERS (same style as reference) ============
 local function MkCorner(p, r) Instance.new("UICorner", p).CornerRadius = UDim.new(0, r or 6) end
