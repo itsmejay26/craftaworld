@@ -347,7 +347,7 @@ local oldG = gui:FindFirstChild("AutoFastPNBGui"); if oldG then oldG:Destroy() e
 local sg = Instance.new("ScreenGui", gui)
 sg.Name = "AutoFastPNBGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true
 
-local W, HF, HM = 270, 560, 36
+local W, HF, HM = 270, 300, 36
 local mainConns = {}
 local function addC(c) table.insert(mainConns, c) end
 
@@ -376,139 +376,182 @@ local cpad = Instance.new("UIPadding", ct)
 cpad.PaddingLeft=UDim.new(0,12); cpad.PaddingRight=UDim.new(0,12)
 cpad.PaddingTop=UDim.new(0,10); cpad.PaddingBottom=UDim.new(0,10)
 
-local function Lbl(t,y) return MkLbl(ct,t,y,14,Color3.fromRGB(130,130,175),11,Enum.Font.GothamBold) end
+local function Lbl(t,y) return MkLbl(ct,t,y,13,Color3.fromRGB(130,130,175),10,Enum.Font.GothamBold) end
 local function Div(y) return MkFrame(ct,Color3.fromRGB(52,52,82),y,1) end
 
 local yOff = 0
 
--- ── HIGHLIGHTED IN INVENTORY ─────────────────────────────────────
-Lbl("HIGHLIGHTED IN INVENTORY", yOff); yOff += 16
-local hlN, hlA = MkInfoBox(ct, yOff); yOff += 44
+-- ══════════════════════════════════════════
+--  1. SAFE MODE
+-- ══════════════════════════════════════════
+Lbl("SAFE MODE", yOff); yOff += 14
+MkCheckbox(ct, "Auto Stop  (stranger joins → stop)", yOff, true,  function(v) safeAutoStop=v  end); yOff += 28
+MkCheckbox(ct, "Auto Leave  (stranger joins → leave)",yOff, false, function(v) safeAutoLeave=v end); yOff += 30
 Div(yOff); yOff += 8
 
--- ── SELECTED ITEM FOR PNB ────────────────────────────────────────
-Lbl("SELECTED ITEM FOR PNB", yOff); yOff += 16
-local actN, actA = MkInfoBox(ct, yOff); yOff += 44
-local applyBtn = MkBtn(ct,"✔  APPLY ITEM",yOff,28,0,1,Color3.fromRGB(55,130,90))
-applyBtn.TextSize = 12; yOff += 36
+-- ══════════════════════════════════════════
+--  2. WHITELIST
+-- ══════════════════════════════════════════
+Lbl("WHITELIST", yOff); yOff += 13
+local wlCountLbl = MkLbl(ct,"Users: 1",yOff,11,Color3.fromRGB(100,100,145),9); yOff += 12
+
+local WL_H = 48
+local wlFrame = Instance.new("ScrollingFrame", ct)
+wlFrame.Size=UDim2.new(1,0,0,WL_H); wlFrame.Position=UDim2.new(0,0,0,yOff)
+wlFrame.BackgroundColor3=Color3.fromRGB(22,22,34); wlFrame.BorderSizePixel=0
+wlFrame.ScrollBarThickness=3; wlFrame.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
+wlFrame.CanvasSize=UDim2.new(0,0,0,0); wlFrame.ScrollingDirection=Enum.ScrollingDirection.Y
+MkCorner(wlFrame,5); MkStroke(wlFrame,Color3.fromRGB(52,52,82))
+Instance.new("UIPadding",wlFrame).PaddingLeft=UDim.new(0,6)
+yOff += WL_H + 5
+
+local function RefreshWLDisplay()
+    for _,c in pairs(wlFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+    for i,name in ipairs(whitelist) do
+        local lbl=Instance.new("TextLabel",wlFrame)
+        lbl.Size=UDim2.new(1,0,0,14); lbl.Position=UDim2.new(0,0,0,(i-1)*15)
+        lbl.BackgroundTransparency=1; lbl.Text=(i==1 and "★ " or "  ")..name
+        lbl.TextColor3=(i==1) and Color3.fromRGB(255,220,80) or Color3.fromRGB(175,175,215)
+        lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    end
+    wlFrame.CanvasSize=UDim2.new(0,0,0,#whitelist*15+4)
+    wlCountLbl.Text="Users: "..#whitelist
+end
+RefreshWLDisplay()
+
+local addRow=Instance.new("Frame",ct)
+addRow.Size=UDim2.new(1,0,0,24); addRow.Position=UDim2.new(0,0,0,yOff)
+addRow.BackgroundTransparency=1; addRow.BorderSizePixel=0; yOff += 28
+
+local addBox=Instance.new("TextBox",addRow)
+addBox.Size=UDim2.new(0.66,0,1,0); addBox.BackgroundColor3=Color3.fromRGB(26,26,40)
+addBox.BorderSizePixel=0; addBox.PlaceholderText="username..."
+addBox.PlaceholderColor3=Color3.fromRGB(75,75,110); addBox.TextColor3=Color3.fromRGB(210,210,255)
+addBox.TextSize=10; addBox.Font=Enum.Font.Gotham; addBox.ClearTextOnFocus=false; addBox.Text=""
+MkCorner(addBox,4); MkStroke(addBox,Color3.fromRGB(52,52,82))
+Instance.new("UIPadding",addBox).PaddingLeft=UDim.new(0,6)
+
+local addWlBtn=Instance.new("TextButton",addRow)
+addWlBtn.Size=UDim2.new(0.17,0,1,0); addWlBtn.Position=UDim2.new(0.68,0,0,0)
+addWlBtn.BackgroundColor3=Color3.fromRGB(40,130,60); addWlBtn.BorderSizePixel=0
+addWlBtn.Text="ADD"; addWlBtn.TextColor3=Color3.new(1,1,1); addWlBtn.TextSize=9; addWlBtn.Font=Enum.Font.GothamBold
+MkCorner(addWlBtn,4)
+
+local delWlBtn=Instance.new("TextButton",addRow)
+delWlBtn.Size=UDim2.new(0.13,0,1,0); delWlBtn.Position=UDim2.new(0.87,0,0,0)
+delWlBtn.BackgroundColor3=Color3.fromRGB(140,50,50); delWlBtn.BorderSizePixel=0
+delWlBtn.Text="DEL"; delWlBtn.TextColor3=Color3.new(1,1,1); delWlBtn.TextSize=9; delWlBtn.Font=Enum.Font.GothamBold
+MkCorner(delWlBtn,4)
+
 Div(yOff); yOff += 8
 
--- ── YOUR TILE POSITION (live) ────────────────────────────────────
-Lbl("YOUR TILE POSITION", yOff); yOff += 14
-local posRow = MkFrame(ct, Color3.fromRGB(26,26,40), yOff, 26); MkCorner(posRow); MkStroke(posRow, Color3.fromRGB(52,52,88))
+-- ══════════════════════════════════════════
+--  3. ITEM SELECTION
+-- ══════════════════════════════════════════
+Lbl("HIGHLIGHTED IN INVENTORY", yOff); yOff += 14
+local hlN, hlA = MkInfoBox(ct, yOff); yOff += 42
+Lbl("SELECTED ITEM FOR PNB", yOff); yOff += 14
+local actN, actA = MkInfoBox(ct, yOff); yOff += 42
+local applyBtn = MkBtn(ct,"✔  APPLY ITEM",yOff,26,0,1,Color3.fromRGB(55,130,90))
+applyBtn.TextSize = 12; yOff += 32
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  4. TILE POSITION (live)
+-- ══════════════════════════════════════════
+Lbl("YOUR TILE POSITION", yOff); yOff += 13
+local posRow = MkFrame(ct, Color3.fromRGB(26,26,40), yOff, 24); MkCorner(posRow); MkStroke(posRow, Color3.fromRGB(52,52,88))
 local txL = Instance.new("TextLabel", posRow)
-txL.Size=UDim2.new(0.5,0,1,0); txL.Position=UDim2.new(0,10,0,0)
+txL.Size=UDim2.new(0.5,0,1,0); txL.Position=UDim2.new(0,8,0,0)
 txL.BackgroundTransparency=1; txL.Text="X: —"; txL.TextColor3=Color3.fromRGB(120,200,255)
-txL.TextSize=12; txL.Font=Enum.Font.GothamBold; txL.TextXAlignment=Enum.TextXAlignment.Left
+txL.TextSize=11; txL.Font=Enum.Font.GothamBold; txL.TextXAlignment=Enum.TextXAlignment.Left
 local tyL = Instance.new("TextLabel", posRow)
-tyL.Size=UDim2.new(0.5,-10,1,0); tyL.Position=UDim2.new(0.5,0,0,0)
+tyL.Size=UDim2.new(0.5,-8,1,0); tyL.Position=UDim2.new(0.5,0,0,0)
 tyL.BackgroundTransparency=1; tyL.Text="Y: —"; tyL.TextColor3=Color3.fromRGB(120,200,255)
-tyL.TextSize=12; tyL.Font=Enum.Font.GothamBold; tyL.TextXAlignment=Enum.TextXAlignment.Left
-yOff += 34
+tyL.TextSize=11; tyL.Font=Enum.Font.GothamBold; tyL.TextXAlignment=Enum.TextXAlignment.Left
+yOff += 30
 Div(yOff); yOff += 8
 
--- ── 5×5 TILE SELECTOR ────────────────────────────────────────────
-Lbl("SELECT TARGET TILE  (✓ = selected position)", yOff); yOff += 16
-local TS, TG = 41, 3
-local GS = 5 * TS + 4 * TG   -- 217px
+-- ══════════════════════════════════════════
+--  5. 5×5 TILE SELECTOR
+-- ══════════════════════════════════════════
+Lbl("SELECT TARGET TILE  (✓ = selected)", yOff); yOff += 14
+local TS, TG = 38, 3
+local GS = 5*TS + 4*TG   -- 202px
 local gf = MkFrame(ct, Color3.new(0,0,0), yOff, GS)
-gf.Size = UDim2.new(0,GS,0,GS); gf.Position = UDim2.new(0,5,0,yOff)
-gf.BackgroundTransparency = 1
+gf.Size=UDim2.new(0,GS,0,GS); gf.Position=UDim2.new(0,5,0,yOff); gf.BackgroundTransparency=1
 
--- Tile offset label (updated when a tile is clicked)
 local selOffsetLbl   -- forward declare
 local tileButtons = {}
 
 local function GetTileOffset(idx)
-    local row = math.floor((idx-1)/5); local col = (idx-1)%5
-    return col-2, 2-row   -- offX, offY
+    local row=math.floor((idx-1)/5); local col=(idx-1)%5
+    return col-2, 2-row
 end
 local function UpdateTileGrid()
-    local offX, offY = GetTileOffset(selectedTileIdx)
+    local offX,offY=GetTileOffset(selectedTileIdx)
     for i=1,25 do
-        local isCenter = (i==13); local isSel = (i==selectedTileIdx)
-        local btn = tileButtons[i]
+        local isCenter=(i==13); local isSel=(i==selectedTileIdx); local btn=tileButtons[i]
         if isSel then
-            -- Selected tile is always blue, whether center or not
-            btn.BackgroundColor3 = Color3.fromRGB(75,160,220)
-            btn.Text = "✓"; btn.TextColor3 = Color3.fromRGB(255,255,255)
+            btn.BackgroundColor3=Color3.fromRGB(75,160,220); btn.Text="✓"; btn.TextColor3=Color3.fromRGB(255,255,255)
         elseif isCenter then
-            -- Center unselected: dim ● to show player position
-            btn.BackgroundColor3 = Color3.fromRGB(55,40,90)
-            btn.Text = "●"; btn.TextColor3 = Color3.fromRGB(175,140,220)
+            btn.BackgroundColor3=Color3.fromRGB(55,40,90); btn.Text="●"; btn.TextColor3=Color3.fromRGB(175,140,220)
         else
-            btn.BackgroundColor3 = Color3.fromRGB(36,36,52)
-            btn.Text = ""; btn.TextColor3 = Color3.fromRGB(255,255,255)
+            btn.BackgroundColor3=Color3.fromRGB(36,36,52); btn.Text=""; btn.TextColor3=Color3.fromRGB(255,255,255)
         end
     end
     if selOffsetLbl then
-        if offX==0 and offY==0 then
-            selOffsetLbl.Text = "On You  (0, 0)"
-            selOffsetLbl.TextColor3 = Color3.fromRGB(85,210,115)
-        else
-            selOffsetLbl.Text = string.format("Offset  X: %+d  Y: %+d", offX, offY)
-            selOffsetLbl.TextColor3 = Color3.fromRGB(85,210,115)
-        end
+        selOffsetLbl.Text = (offX==0 and offY==0) and "On You  (0, 0)"
+            or string.format("Offset  X: %+d  Y: %+d", offX, offY)
+        selOffsetLbl.TextColor3=Color3.fromRGB(85,210,115)
     end
 end
 
 for r=0,4 do for c2=0,4 do
-    local idx = r*5+c2+1; local isC=(r==2 and c2==2)
-    local btn = Instance.new("TextButton", gf)
-    btn.Size = UDim2.new(0,TS,0,TS); btn.Position = UDim2.new(0,c2*(TS+TG),0,r*(TS+TG))
-    btn.BackgroundColor3 = isC and Color3.fromRGB(75,160,220) or Color3.fromRGB(36,36,52)
-    btn.BorderSizePixel = 0; btn.Text = isC and "✓" or ""; btn.TextColor3 = Color3.fromRGB(255,255,255)
-    btn.TextSize = 14; btn.Font = Enum.Font.GothamBold; MkCorner(btn,5); tileButtons[idx] = btn
-    btn.MouseButton1Click:Connect(function()
-        selectedTileIdx = idx; UpdateTileGrid()
-    end)
+    local idx=r*5+c2+1; local isC=(r==2 and c2==2)
+    local btn=Instance.new("TextButton",gf)
+    btn.Size=UDim2.new(0,TS,0,TS); btn.Position=UDim2.new(0,c2*(TS+TG),0,r*(TS+TG))
+    btn.BackgroundColor3=isC and Color3.fromRGB(75,160,220) or Color3.fromRGB(36,36,52)
+    btn.BorderSizePixel=0; btn.Text=isC and "✓" or ""; btn.TextColor3=Color3.fromRGB(255,255,255)
+    btn.TextSize=13; btn.Font=Enum.Font.GothamBold; MkCorner(btn,5); tileButtons[idx]=btn
+    btn.MouseButton1Click:Connect(function() selectedTileIdx=idx; UpdateTileGrid() end)
 end end
 UpdateTileGrid()
 
-yOff += GS + 8
+yOff += GS + 6
+-- Offset label inline below grid
+local selRow=MkFrame(ct,Color3.fromRGB(26,26,40),yOff,22); MkCorner(selRow); MkStroke(selRow,Color3.fromRGB(52,52,88))
+selOffsetLbl=Instance.new("TextLabel",selRow)
+selOffsetLbl.Size=UDim2.new(1,-8,1,0); selOffsetLbl.Position=UDim2.new(0,8,0,0)
+selOffsetLbl.BackgroundTransparency=1; selOffsetLbl.Text="On You  (0, 0)"
+selOffsetLbl.TextColor3=Color3.fromRGB(85,210,115)
+selOffsetLbl.TextSize=11; selOffsetLbl.Font=Enum.Font.GothamBold
+selOffsetLbl.TextXAlignment=Enum.TextXAlignment.Center
+yOff += 28
 Div(yOff); yOff += 8
 
--- ── SELECTED TILE OFFSET ─────────────────────────────────────────
-Lbl("SELECTED TILE", yOff); yOff += 14
-local selRow = MkFrame(ct, Color3.fromRGB(26,26,40), yOff, 26); MkCorner(selRow); MkStroke(selRow, Color3.fromRGB(52,52,88))
-selOffsetLbl = Instance.new("TextLabel", selRow)
-selOffsetLbl.Size = UDim2.new(1,-8,1,0); selOffsetLbl.Position = UDim2.new(0,8,0,0)
-selOffsetLbl.BackgroundTransparency = 1; selOffsetLbl.Text = "On You  (0, 0)"
-selOffsetLbl.TextColor3 = Color3.fromRGB(175,140,220)
-selOffsetLbl.TextSize = 12; selOffsetLbl.Font = Enum.Font.GothamBold
-selOffsetLbl.TextXAlignment = Enum.TextXAlignment.Center
-yOff += 34
-Div(yOff); yOff += 8
+-- ══════════════════════════════════════════
+--  6. LIVE TILE STATE  +  STATUS  +  BUTTONS
+-- ══════════════════════════════════════════
+local tileStateRow=MkFrame(ct,Color3.fromRGB(20,20,28),yOff,28); MkCorner(tileStateRow); MkStroke(tileStateRow,Color3.fromRGB(52,52,88))
+local phaseLbl=Instance.new("TextLabel",tileStateRow)
+phaseLbl.Size=UDim2.new(0.5,0,1,0); phaseLbl.BackgroundTransparency=1; phaseLbl.Text="IDLE"
+phaseLbl.TextColor3=Color3.fromRGB(140,125,180); phaseLbl.TextSize=11; phaseLbl.Font=Enum.Font.GothamBold
+phaseLbl.TextXAlignment=Enum.TextXAlignment.Center
+local tileStateLbl=Instance.new("TextLabel",tileStateRow)
+tileStateLbl.Size=UDim2.new(0.5,0,1,0); tileStateLbl.Position=UDim2.new(0.5,0,0,0)
+tileStateLbl.BackgroundTransparency=1; tileStateLbl.Text="EMPTY"
+tileStateLbl.TextColor3=Color3.fromRGB(170,90,90); tileStateLbl.TextSize=11; tileStateLbl.Font=Enum.Font.GothamBold
+tileStateLbl.TextXAlignment=Enum.TextXAlignment.Center
+yOff += 32
 
--- ── LIVE TILE STATE ───────────────────────────────────────────────
-Lbl("LIVE TILE STATE", yOff); yOff += 14
-local tileStateRow = MkFrame(ct, Color3.fromRGB(20,20,28), yOff, 32); MkCorner(tileStateRow); MkStroke(tileStateRow, Color3.fromRGB(52,52,88))
--- Phase indicator (PLACING / BREAKING / IDLE)
-local phaseLbl = Instance.new("TextLabel", tileStateRow)
-phaseLbl.Size = UDim2.new(0.5,0,1,0); phaseLbl.Position = UDim2.new(0,0,0,0)
-phaseLbl.BackgroundTransparency = 1; phaseLbl.Text = "IDLE"
-phaseLbl.TextColor3 = Color3.fromRGB(140,125,180)
-phaseLbl.TextSize = 12; phaseLbl.Font = Enum.Font.GothamBold
-phaseLbl.TextXAlignment = Enum.TextXAlignment.Center
--- Tile present/empty indicator
-local tileStateLbl = Instance.new("TextLabel", tileStateRow)
-tileStateLbl.Size = UDim2.new(0.5,0,1,0); tileStateLbl.Position = UDim2.new(0.5,0,0,0)
-tileStateLbl.BackgroundTransparency = 1; tileStateLbl.Text = "EMPTY"
-tileStateLbl.TextColor3 = Color3.fromRGB(170,90,90)
-tileStateLbl.TextSize = 12; tileStateLbl.Font = Enum.Font.GothamBold
-tileStateLbl.TextXAlignment = Enum.TextXAlignment.Center
-yOff += 40
-Div(yOff); yOff += 8
+local stLbl=MkLbl(ct,"[ IDLE ]",yOff,15,Color3.fromRGB(140,125,180),10)
+stLbl.TextTruncate=Enum.TextTruncate.AtEnd; yOff += 18
 
--- ── STATUS ───────────────────────────────────────────────────────
-local stLbl = MkLbl(ct,"[ IDLE ]",yOff,16,Color3.fromRGB(140,125,180),11)
-stLbl.TextTruncate = Enum.TextTruncate.AtEnd; yOff += 24
+local playBtn=MkBtn(ct,"▶  START",yOff,30,0,0.48,Color3.fromRGB(42,150,70))
+local stopBtn=MkBtn(ct,"■  STOP", yOff,30,0.52,0.48,Color3.fromRGB(170,42,42)); yOff += 36
 
--- ── START / STOP ──────────────────────────────────────────────────
-local playBtn = MkBtn(ct,"▶  START",yOff,32,0,0.48,Color3.fromRGB(42,150,70))
-local stopBtn = MkBtn(ct,"■  STOP", yOff,32,0.52,0.48,Color3.fromRGB(170,42,42)); yOff += 40
-
-ct.CanvasSize = UDim2.new(0,0,0,600)  -- expanded dynamically at end
+ct.CanvasSize = UDim2.new(0,0,0,yOff+10)
 MakeDraggable(bar, win, mainConns)
 
 local function SetSt(txt, col) stLbl.Text = txt; stLbl.TextColor3 = col or Color3.fromRGB(150,150,185) end
@@ -708,67 +751,7 @@ stopBtn.MouseButton1Click:Connect(function()
     SetSt("[ STOPPED ]", Color3.fromRGB(185,150,150))
 end)
 
--- ── SAFE MODE ────────────────────────────────────────────────────
-Div(yOff); yOff += 8
-Lbl("SAFE MODE", yOff); yOff += 16
-MkCheckbox(ct, "Auto Stop  (stranger joins → stop farm)",  yOff, true,  function(v) safeAutoStop=v  end); yOff += 30
-MkCheckbox(ct, "Auto Leave  (stranger joins → leave game)", yOff, false, function(v) safeAutoLeave=v end); yOff += 32
-Div(yOff); yOff += 8
-
--- ── WHITELIST ─────────────────────────────────────────────────────
-Lbl("WHITELIST", yOff); yOff += 14
-local wlCountLbl = MkLbl(ct, "Users: "..#whitelist, yOff, 12, Color3.fromRGB(110,110,155), 10); yOff += 14
-
-local WL_H = 60
-local wlFrame = Instance.new("ScrollingFrame", ct)
-wlFrame.Size=UDim2.new(1,0,0,WL_H); wlFrame.Position=UDim2.new(0,0,0,yOff)
-wlFrame.BackgroundColor3=Color3.fromRGB(22,22,34); wlFrame.BorderSizePixel=0
-wlFrame.ScrollBarThickness=3; wlFrame.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
-wlFrame.CanvasSize=UDim2.new(0,0,0,0); wlFrame.ScrollingDirection=Enum.ScrollingDirection.Y
-MkCorner(wlFrame,5); MkStroke(wlFrame,Color3.fromRGB(52,52,82))
-local wlPad=Instance.new("UIPadding",wlFrame)
-wlPad.PaddingLeft=UDim.new(0,6); wlPad.PaddingTop=UDim.new(0,4); wlPad.PaddingBottom=UDim.new(0,4)
-yOff += WL_H + 6
-
-local function RefreshWLDisplay()
-    for _,c in pairs(wlFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
-    for i, name in ipairs(whitelist) do
-        local lbl = Instance.new("TextLabel", wlFrame)
-        lbl.Size=UDim2.new(1,0,0,14); lbl.Position=UDim2.new(0,0,0,(i-1)*15)
-        lbl.BackgroundTransparency=1; lbl.Text=(i==1 and "★ " or "  ")..name
-        lbl.TextColor3=(i==1) and Color3.fromRGB(255,220,80) or Color3.fromRGB(175,175,215)
-        lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
-    end
-    wlFrame.CanvasSize=UDim2.new(0,0,0,#whitelist*15+8)
-    wlCountLbl.Text="Users: "..#whitelist
-end
-RefreshWLDisplay()
-
--- Input row: [username box] [ADD] [DEL]
-local addRow = Instance.new("Frame", ct)
-addRow.Size=UDim2.new(1,0,0,26); addRow.Position=UDim2.new(0,0,0,yOff)
-addRow.BackgroundTransparency=1; addRow.BorderSizePixel=0; yOff += 30
-
-local addBox = Instance.new("TextBox", addRow)
-addBox.Size=UDim2.new(0.66,0,1,0); addBox.BackgroundColor3=Color3.fromRGB(26,26,40)
-addBox.BorderSizePixel=0; addBox.PlaceholderText="username..."
-addBox.PlaceholderColor3=Color3.fromRGB(80,80,110); addBox.TextColor3=Color3.fromRGB(210,210,255)
-addBox.TextSize=10; addBox.Font=Enum.Font.Gotham; addBox.ClearTextOnFocus=false; addBox.Text=""
-MkCorner(addBox,4); MkStroke(addBox,Color3.fromRGB(52,52,82))
-Instance.new("UIPadding",addBox).PaddingLeft=UDim.new(0,6)
-
-local addWlBtn = Instance.new("TextButton", addRow)
-addWlBtn.Size=UDim2.new(0.17,0,1,0); addWlBtn.Position=UDim2.new(0.68,0,0,0)
-addWlBtn.BackgroundColor3=Color3.fromRGB(40,130,60); addWlBtn.BorderSizePixel=0
-addWlBtn.Text="ADD"; addWlBtn.TextColor3=Color3.new(1,1,1); addWlBtn.TextSize=9; addWlBtn.Font=Enum.Font.GothamBold
-MkCorner(addWlBtn,4)
-
-local delWlBtn = Instance.new("TextButton", addRow)
-delWlBtn.Size=UDim2.new(0.13,0,1,0); delWlBtn.Position=UDim2.new(0.87,0,0,0)
-delWlBtn.BackgroundColor3=Color3.fromRGB(140,50,50); delWlBtn.BorderSizePixel=0
-delWlBtn.Text="DEL"; delWlBtn.TextColor3=Color3.new(1,1,1); delWlBtn.TextSize=9; delWlBtn.Font=Enum.Font.GothamBold
-MkCorner(delWlBtn,4)
-
+-- ── Whitelist button logic (wired here since SetSt is now in scope) ──
 addWlBtn.MouseButton1Click:Connect(function()
     local name = addBox.Text:match("^%s*(.-)%s*$")
     if name=="" then return end
@@ -776,7 +759,6 @@ addWlBtn.MouseButton1Click:Connect(function()
     table.insert(whitelist, name); SaveWhitelist(); RefreshWLDisplay(); addBox.Text=""
     SetSt("WL: added "..name, Color3.fromRGB(85,210,115))
 end)
-
 delWlBtn.MouseButton1Click:Connect(function()
     local name = addBox.Text:match("^%s*(.-)%s*$")
     if name=="" then
@@ -794,9 +776,6 @@ delWlBtn.MouseButton1Click:Connect(function()
     end
     SetSt("WL: not found", Color3.fromRGB(220,85,85))
 end)
-
-Div(yOff); yOff += 8
-ct.CanvasSize = UDim2.new(0,0,0,yOff+10)
 
 -- ── Safe Mode: player join monitor ───────────────────────────────
 table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
