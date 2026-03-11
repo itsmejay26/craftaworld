@@ -308,23 +308,22 @@ local function MkInfoBox(par, y)
     return nL, aL
 end
 local function MkCheckbox(par, txt, y, state, onChange)
-    local f = MkFrame(par, Color3.fromRGB(26,26,40), y, 26); MkCorner(f,5)
+    local f = MkFrame(par, Color3.fromRGB(26,26,40), y, 26); MkCorner(f,5); MkStroke(f, Color3.fromRGB(52,52,82))
     local chk = Instance.new("TextButton", f)
     chk.Size=UDim2.new(0,18,0,18); chk.Position=UDim2.new(0,5,0.5,-9)
-    chk.BackgroundColor3 = state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
-    chk.BorderSizePixel=0; chk.Text = state and "✓" or ""; chk.TextColor3=Color3.fromRGB(255,255,255)
-    chk.TextSize=13; chk.Font=Enum.Font.GothamBold; MkCorner(chk,4)
+    chk.BackgroundColor3=state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
+    chk.BorderSizePixel=0; chk.Text=state and "✓" or ""; chk.TextColor3=Color3.new(1,1,1)
+    chk.TextSize=12; chk.Font=Enum.Font.GothamBold; MkCorner(chk,4)
     local lbl = Instance.new("TextLabel", f)
     lbl.Size=UDim2.new(1,-30,1,0); lbl.Position=UDim2.new(0,28,0,0)
-    lbl.BackgroundTransparency=1; lbl.Text=txt; lbl.TextColor3=Color3.fromRGB(195,195,235)
-    lbl.TextSize=11; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    lbl.BackgroundTransparency=1; lbl.Text=txt; lbl.TextColor3=Color3.fromRGB(195,195,230)
+    lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
     chk.MouseButton1Click:Connect(function()
-        state=not state
+        state = not state
         chk.BackgroundColor3 = state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
         chk.Text = state and "✓" or ""
         if onChange then onChange(state) end
     end)
-    return f
 end
 
 local function MakeDraggable(bar, win, conns)
@@ -348,7 +347,7 @@ local oldG = gui:FindFirstChild("AutoFastPNBGui"); if oldG then oldG:Destroy() e
 local sg = Instance.new("ScreenGui", gui)
 sg.Name = "AutoFastPNBGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true
 
-local W, HF, HM = 270, 340, 36
+local W, HF, HM = 270, 560, 36
 local mainConns = {}
 local function addC(c) table.insert(mainConns, c) end
 
@@ -711,13 +710,13 @@ end)
 
 -- ── SAFE MODE ────────────────────────────────────────────────────
 Div(yOff); yOff += 8
-Lbl("SAFE MODE", yOff, 14, Color3.fromRGB(130,130,175), 11, Enum.Font.GothamBold); yOff += 16
-MkCheckbox(ct, "Auto Stop  (stranger joins → stop farm)", yOff, true,  function(v) safeAutoStop=v  end); yOff += 30
-MkCheckbox(ct, "Auto Leave  (stranger joins → leave game)",yOff, false, function(v) safeAutoLeave=v end); yOff += 32
+Lbl("SAFE MODE", yOff); yOff += 16
+MkCheckbox(ct, "Auto Stop  (stranger joins → stop farm)",  yOff, true,  function(v) safeAutoStop=v  end); yOff += 30
+MkCheckbox(ct, "Auto Leave  (stranger joins → leave game)", yOff, false, function(v) safeAutoLeave=v end); yOff += 32
 Div(yOff); yOff += 8
 
 -- ── WHITELIST ─────────────────────────────────────────────────────
-Lbl("WHITELIST", yOff, 14, Color3.fromRGB(130,130,175), 11, Enum.Font.GothamBold); yOff += 14
+Lbl("WHITELIST", yOff); yOff += 14
 local wlCountLbl = MkLbl(ct, "Users: "..#whitelist, yOff, 12, Color3.fromRGB(110,110,155), 10); yOff += 14
 
 local WL_H = 60
