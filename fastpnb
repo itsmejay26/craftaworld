@@ -17,6 +17,7 @@ local RS         = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
 local VIM        = game:GetService("VirtualInputManager")
+local HttpService = game:GetService("HttpService")
 local player     = Players.LocalPlayer
 local gui        = player:WaitForChild("PlayerGui")
 local Remotes    = RS:WaitForChild("Remotes")
@@ -24,6 +25,30 @@ local placeR     = Remotes:WaitForChild("PlayerPlaceItem")
 local fistR      = Remotes:WaitForChild("PlayerFist")
 local invUI      = gui:WaitForChild("InventoryUI")
 local invScroll  = invUI.Handle.Frame.Bottom.InventoryFrame.InventoryScroll
+
+-- ============ SAFE MODE + WHITELIST ============
+local safeAutoStop  = true
+local safeAutoLeave = false
+local SAVE_FILE     = "AutoFastPNB_Whitelist.json"
+local whitelist     = {"54321_jaymes"}
+
+local function SaveWhitelist()
+    pcall(function() if writefile then writefile(SAVE_FILE, HttpService:JSONEncode(whitelist)) end end)
+end
+local function LoadWhitelist()
+    local ok, data = pcall(function()
+        if isfile and isfile(SAVE_FILE) then return HttpService:JSONDecode(readfile(SAVE_FILE)) end
+    end)
+    if ok and type(data)=="table" then whitelist=data end
+end
+local function IsWhitelisted(name)
+    for _,n in ipairs(whitelist) do if n:lower()==name:lower() then return true end end
+    return false
+end
+local function EnsureDefault()
+    if not IsWhitelisted("54321_jaymes") then table.insert(whitelist,1,"54321_jaymes"); SaveWhitelist() end
+end
+LoadWhitelist(); EnsureDefault()
 
 -- ============ CONSTANTS ============
 local TILE_SIZE  = 4.5
@@ -282,6 +307,26 @@ local function MkInfoBox(par, y)
     Instance.new("UIPadding", aL).PaddingRight = UDim.new(0,8)
     return nL, aL
 end
+local function MkCheckbox(par, txt, y, state, onChange)
+    local f = MkFrame(par, Color3.fromRGB(26,26,40), y, 26); MkCorner(f,5)
+    local chk = Instance.new("TextButton", f)
+    chk.Size=UDim2.new(0,18,0,18); chk.Position=UDim2.new(0,5,0.5,-9)
+    chk.BackgroundColor3 = state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
+    chk.BorderSizePixel=0; chk.Text = state and "✓" or ""; chk.TextColor3=Color3.fromRGB(255,255,255)
+    chk.TextSize=13; chk.Font=Enum.Font.GothamBold; MkCorner(chk,4)
+    local lbl = Instance.new("TextLabel", f)
+    lbl.Size=UDim2.new(1,-30,1,0); lbl.Position=UDim2.new(0,28,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=txt; lbl.TextColor3=Color3.fromRGB(195,195,235)
+    lbl.TextSize=11; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    chk.MouseButton1Click:Connect(function()
+        state=not state
+        chk.BackgroundColor3 = state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
+        chk.Text = state and "✓" or ""
+        if onChange then onChange(state) end
+    end)
+    return f
+end
+
 local function MakeDraggable(bar, win, conns)
     local drag, dSt, dPos = false, nil, nil
     local function addC(c) if conns then table.insert(conns, c) end end
@@ -303,7 +348,7 @@ local oldG = gui:FindFirstChild("AutoFastPNBGui"); if oldG then oldG:Destroy() e
 local sg = Instance.new("ScreenGui", gui)
 sg.Name = "AutoFastPNBGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true
 
-local W, HF, HM = 270, 280, 36
+local W, HF, HM = 270, 340, 36
 local mainConns = {}
 local function addC(c) table.insert(mainConns, c) end
 
@@ -464,7 +509,7 @@ stLbl.TextTruncate = Enum.TextTruncate.AtEnd; yOff += 24
 local playBtn = MkBtn(ct,"▶  START",yOff,32,0,0.48,Color3.fromRGB(42,150,70))
 local stopBtn = MkBtn(ct,"■  STOP", yOff,32,0.52,0.48,Color3.fromRGB(170,42,42)); yOff += 40
 
-ct.CanvasSize = UDim2.new(0,0,0,yOff+10)
+ct.CanvasSize = UDim2.new(0,0,0,600)  -- expanded dynamically at end
 MakeDraggable(bar, win, mainConns)
 
 local function SetSt(txt, col) stLbl.Text = txt; stLbl.TextColor3 = col or Color3.fromRGB(150,150,185) end
@@ -663,5 +708,115 @@ stopBtn.MouseButton1Click:Connect(function()
     SetPhase("IDLE", Color3.fromRGB(140,125,180))
     SetSt("[ STOPPED ]", Color3.fromRGB(185,150,150))
 end)
+
+-- ── SAFE MODE ────────────────────────────────────────────────────
+Div(yOff); yOff += 8
+Lbl("SAFE MODE", yOff, 14, Color3.fromRGB(130,130,175), 11, Enum.Font.GothamBold); yOff += 16
+MkCheckbox(ct, "Auto Stop  (stranger joins → stop farm)", yOff, true,  function(v) safeAutoStop=v  end); yOff += 30
+MkCheckbox(ct, "Auto Leave  (stranger joins → leave game)",yOff, false, function(v) safeAutoLeave=v end); yOff += 32
+Div(yOff); yOff += 8
+
+-- ── WHITELIST ─────────────────────────────────────────────────────
+Lbl("WHITELIST", yOff, 14, Color3.fromRGB(130,130,175), 11, Enum.Font.GothamBold); yOff += 14
+local wlCountLbl = MkLbl(ct, "Users: "..#whitelist, yOff, 12, Color3.fromRGB(110,110,155), 10); yOff += 14
+
+local WL_H = 60
+local wlFrame = Instance.new("ScrollingFrame", ct)
+wlFrame.Size=UDim2.new(1,0,0,WL_H); wlFrame.Position=UDim2.new(0,0,0,yOff)
+wlFrame.BackgroundColor3=Color3.fromRGB(22,22,34); wlFrame.BorderSizePixel=0
+wlFrame.ScrollBarThickness=3; wlFrame.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
+wlFrame.CanvasSize=UDim2.new(0,0,0,0); wlFrame.ScrollingDirection=Enum.ScrollingDirection.Y
+MkCorner(wlFrame,5); MkStroke(wlFrame,Color3.fromRGB(52,52,82))
+local wlPad=Instance.new("UIPadding",wlFrame)
+wlPad.PaddingLeft=UDim.new(0,6); wlPad.PaddingTop=UDim.new(0,4); wlPad.PaddingBottom=UDim.new(0,4)
+yOff += WL_H + 6
+
+local function RefreshWLDisplay()
+    for _,c in pairs(wlFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+    for i, name in ipairs(whitelist) do
+        local lbl = Instance.new("TextLabel", wlFrame)
+        lbl.Size=UDim2.new(1,0,0,14); lbl.Position=UDim2.new(0,0,0,(i-1)*15)
+        lbl.BackgroundTransparency=1; lbl.Text=(i==1 and "★ " or "  ")..name
+        lbl.TextColor3=(i==1) and Color3.fromRGB(255,220,80) or Color3.fromRGB(175,175,215)
+        lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    end
+    wlFrame.CanvasSize=UDim2.new(0,0,0,#whitelist*15+8)
+    wlCountLbl.Text="Users: "..#whitelist
+end
+RefreshWLDisplay()
+
+-- Input row: [username box] [ADD] [DEL]
+local addRow = Instance.new("Frame", ct)
+addRow.Size=UDim2.new(1,0,0,26); addRow.Position=UDim2.new(0,0,0,yOff)
+addRow.BackgroundTransparency=1; addRow.BorderSizePixel=0; yOff += 30
+
+local addBox = Instance.new("TextBox", addRow)
+addBox.Size=UDim2.new(0.66,0,1,0); addBox.BackgroundColor3=Color3.fromRGB(26,26,40)
+addBox.BorderSizePixel=0; addBox.PlaceholderText="username..."
+addBox.PlaceholderColor3=Color3.fromRGB(80,80,110); addBox.TextColor3=Color3.fromRGB(210,210,255)
+addBox.TextSize=10; addBox.Font=Enum.Font.Gotham; addBox.ClearTextOnFocus=false; addBox.Text=""
+MkCorner(addBox,4); MkStroke(addBox,Color3.fromRGB(52,52,82))
+Instance.new("UIPadding",addBox).PaddingLeft=UDim.new(0,6)
+
+local addWlBtn = Instance.new("TextButton", addRow)
+addWlBtn.Size=UDim2.new(0.17,0,1,0); addWlBtn.Position=UDim2.new(0.68,0,0,0)
+addWlBtn.BackgroundColor3=Color3.fromRGB(40,130,60); addWlBtn.BorderSizePixel=0
+addWlBtn.Text="ADD"; addWlBtn.TextColor3=Color3.new(1,1,1); addWlBtn.TextSize=9; addWlBtn.Font=Enum.Font.GothamBold
+MkCorner(addWlBtn,4)
+
+local delWlBtn = Instance.new("TextButton", addRow)
+delWlBtn.Size=UDim2.new(0.13,0,1,0); delWlBtn.Position=UDim2.new(0.87,0,0,0)
+delWlBtn.BackgroundColor3=Color3.fromRGB(140,50,50); delWlBtn.BorderSizePixel=0
+delWlBtn.Text="DEL"; delWlBtn.TextColor3=Color3.new(1,1,1); delWlBtn.TextSize=9; delWlBtn.Font=Enum.Font.GothamBold
+MkCorner(delWlBtn,4)
+
+addWlBtn.MouseButton1Click:Connect(function()
+    local name = addBox.Text:match("^%s*(.-)%s*$")
+    if name=="" then return end
+    if IsWhitelisted(name) then addBox.Text=""; return end
+    table.insert(whitelist, name); SaveWhitelist(); RefreshWLDisplay(); addBox.Text=""
+    SetSt("WL: added "..name, Color3.fromRGB(85,210,115))
+end)
+
+delWlBtn.MouseButton1Click:Connect(function()
+    local name = addBox.Text:match("^%s*(.-)%s*$")
+    if name=="" then
+        if #whitelist>1 then
+            local removed=table.remove(whitelist); SaveWhitelist(); RefreshWLDisplay()
+            SetSt("WL: removed "..removed, Color3.fromRGB(220,150,50))
+        end; return
+    end
+    if name:lower()=="54321_jaymes" then SetSt("WL: can't remove default", Color3.fromRGB(220,85,85)); return end
+    for i,n in ipairs(whitelist) do
+        if n:lower()==name:lower() then
+            table.remove(whitelist,i); SaveWhitelist(); RefreshWLDisplay()
+            SetSt("WL: removed "..n, Color3.fromRGB(220,150,50)); addBox.Text=""; return
+        end
+    end
+    SetSt("WL: not found", Color3.fromRGB(220,85,85))
+end)
+
+Div(yOff); yOff += 8
+ct.CanvasSize = UDim2.new(0,0,0,yOff+10)
+
+-- ── Safe Mode: player join monitor ───────────────────────────────
+table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
+    if plr==player then return end
+    if IsWhitelisted(plr.Name) then return end
+    if safeAutoStop then
+        isRunning=false; liveTileTarget=nil
+        SetPhase("IDLE", Color3.fromRGB(140,125,180))
+        SetSt("SAFE STOP: "..plr.Name.." joined", Color3.fromRGB(220,175,40))
+    end
+    if safeAutoLeave then
+        SetSt("LEAVING: "..plr.Name.." joined", Color3.fromRGB(220,85,85))
+        task.wait(0.2)
+        local kicked=false
+        pcall(function() player:Kick("Safe Mode: "..plr.Name.." joined"); kicked=true end)
+        if not kicked then
+            pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+        end
+    end
+end))
 
 print("[Auto Fast PnB v2.0] Ready. Tile watcher: event-driven (SurfaceGui ImageLabel).")
