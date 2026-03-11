@@ -348,7 +348,7 @@ yOff += 34
 Div(yOff); yOff += 8
 
 -- ── 5×5 TILE SELECTOR ────────────────────────────────────────────
-Lbl("SELECT TARGET TILE  (● = you, ✓ = target)", yOff); yOff += 16
+Lbl("SELECT TARGET TILE  (✓ = selected position)", yOff); yOff += 16
 local TS, TG = 41, 3
 local GS = 5 * TS + 4 * TG   -- 217px
 local gf = MkFrame(ct, Color3.new(0,0,0), yOff, GS)
@@ -368,13 +368,12 @@ local function UpdateTileGrid()
     for i=1,25 do
         local isCenter = (i==13); local isSel = (i==selectedTileIdx)
         local btn = tileButtons[i]
-        if isSel and not isCenter then
+        if isSel then
+            -- Selected tile is always blue, whether center or not
             btn.BackgroundColor3 = Color3.fromRGB(75,160,220)
             btn.Text = "✓"; btn.TextColor3 = Color3.fromRGB(255,255,255)
-        elseif isCenter and isSel then
-            btn.BackgroundColor3 = Color3.fromRGB(80,50,120)
-            btn.Text = "●"; btn.TextColor3 = Color3.fromRGB(255,255,255)
         elseif isCenter then
+            -- Center unselected: dim ● to show player position
             btn.BackgroundColor3 = Color3.fromRGB(55,40,90)
             btn.Text = "●"; btn.TextColor3 = Color3.fromRGB(175,140,220)
         else
@@ -385,7 +384,7 @@ local function UpdateTileGrid()
     if selOffsetLbl then
         if offX==0 and offY==0 then
             selOffsetLbl.Text = "On You  (0, 0)"
-            selOffsetLbl.TextColor3 = Color3.fromRGB(175,140,220)
+            selOffsetLbl.TextColor3 = Color3.fromRGB(85,210,115)
         else
             selOffsetLbl.Text = string.format("Offset  X: %+d  Y: %+d", offX, offY)
             selOffsetLbl.TextColor3 = Color3.fromRGB(85,210,115)
@@ -397,8 +396,8 @@ for r=0,4 do for c2=0,4 do
     local idx = r*5+c2+1; local isC=(r==2 and c2==2)
     local btn = Instance.new("TextButton", gf)
     btn.Size = UDim2.new(0,TS,0,TS); btn.Position = UDim2.new(0,c2*(TS+TG),0,r*(TS+TG))
-    btn.BackgroundColor3 = isC and Color3.fromRGB(55,40,90) or Color3.fromRGB(36,36,52)
-    btn.BorderSizePixel = 0; btn.Text = isC and "●" or ""; btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.BackgroundColor3 = isC and Color3.fromRGB(75,160,220) or Color3.fromRGB(36,36,52)
+    btn.BorderSizePixel = 0; btn.Text = isC and "✓" or ""; btn.TextColor3 = Color3.fromRGB(255,255,255)
     btn.TextSize = 14; btn.Font = Enum.Font.GothamBold; MkCorner(btn,5); tileButtons[idx] = btn
     btn.MouseButton1Click:Connect(function()
         selectedTileIdx = idx; UpdateTileGrid()
