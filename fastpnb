@@ -103,13 +103,16 @@ local function GetTilePos()
 end
 
 -- ============ LIVE WORLD TILE CHECKER ============
--- Checks if a foreground tile (non-character BasePart) exists at the given tile grid coordinates.
--- Uses GetPartBoundsInBox, excluding the player's character, to detect presence/absence of tiles.
+-- Searches for a foreground tile at the given tile grid coordinates.
+-- Uses a TIGHT Z range (3 studs) so background / floor parts behind the playfield
+-- are NOT counted.  Also filters by size so large decorative panels are ignored.
 local function IsTileAt(tileVec2)
     local wx = tileVec2.X * TILE_SIZE
     local wy = tileVec2.Y * TILE_SIZE
     local cf = CFrame.new(wx, wy, 0)
-    local halfBox = Vector3.new(TILE_SIZE * 0.42, TILE_SIZE * 0.42, 40)
+    -- Tight box: small XY so we stay within one tile cell, shallow Z so we
+    -- don't accidentally catch background geometry.
+    local searchBox = Vector3.new(TILE_SIZE * 0.75, TILE_SIZE * 0.75, 3)
 
     local params = OverlapParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
@@ -118,10 +121,20 @@ local function IsTileAt(tileVec2)
     if char then table.insert(excludeList, char) end
     params.FilterDescendantsInstances = excludeList
 
-    local parts = workspace:GetPartBoundsInBox(cf, halfBox * 2, params)
+    local ok, parts = pcall(function()
+        return workspace:GetPartBoundsInBox(cf, searchBox, params)
+    end)
+    if not ok or not parts then return false end
+
     for _, part in pairs(parts) do
         if part:IsA("BasePart") and part ~= workspace.Terrain then
-            return true
+            local sz = part.Size
+            -- Accept only parts that are roughly tile-sized in X and Y
+            -- (rejects giant background panels, thin decoration strips, etc.)
+            if sz.X <= TILE_SIZE * 1.5 and sz.Y <= TILE_SIZE * 1.5
+            and sz.X >= 0.8 and sz.Y >= 0.8 then
+                return true
+            end
         end
     end
     return false
@@ -475,48 +488,60 @@ playBtn.MouseButton1Click:Connect(function()
     SetSt("[ RUNNING ]  "..tostring(itemCode), Color3.fromRGB(75,210,105))
 
     task.spawn(function()
+        -- Safety caps: if tile detection lags/fails, we still cycle
+        -- instead of hanging in one phase forever.
+        -- 120 fires @ 0.01s ≈ 1.2s max place burst before forcing break
+        -- 600 fires @ 0.01s ≈ 6.0s max break burst before forcing place
+        local MAX_PLACE = 120
+        local MAX_BREAK = 600
+
         while isRunning and not inst.dead do
 
-            -- ═══════════════════════════════
+            -- ═══════════════════════════════════════════════
             --  PLACE PHASE
-            --  Fire place at 0.01 until tile appears
-            -- ═══════════════════════════════
-            if not IsTileAt(targetPos) then
-                SetPhase("PLACING", Color3.fromRGB(85,210,115))
-                SetSt("[ PLACING ]  "..tostring(itemCode), Color3.fromRGB(85,210,115))
+            --  Fire placeR at 0.01 until tile detected as present
+            --  OR until MAX_PLACE fires (safety fallback).
+            -- ═══════════════════════════════════════════════
+            SetPhase("PLACING", Color3.fromRGB(85,210,115))
+            SetSt("[ PLACING ]  "..tostring(itemCode), Color3.fromRGB(85,210,115))
 
-                while isRunning and not inst.dead do
-                    local slotN = FindSlotForCode(itemCode)
-                    if not slotN then
-                        -- Item ran out → stop
-                        isRunning = false
-                        liveTileTarget = nil
-                        SetPhase("IDLE", Color3.fromRGB(140,125,180))
-                        SetSt("[ STOPPED — Item empty! ]", Color3.fromRGB(220,85,85))
-                        break
-                    end
-                    placeR:FireServer(targetPos, slotN)
-                    task.wait(FIRE_SPEED)
-                    if IsTileAt(targetPos) then break end  -- tile appeared → go break
+            local placeFires = 0
+            while isRunning and not inst.dead do
+                local slotN = FindSlotForCode(itemCode)
+                if not slotN then
+                    isRunning = false
+                    liveTileTarget = nil
+                    SetPhase("IDLE", Color3.fromRGB(140,125,180))
+                    SetSt("[ STOPPED — Item empty! ]", Color3.fromRGB(220,85,85))
+                    break
                 end
+                placeR:FireServer(targetPos, slotN)
+                task.wait(FIRE_SPEED)
+                placeFires += 1
+                if IsTileAt(targetPos) then break end       -- tile appeared → go break
+                if placeFires >= MAX_PLACE then break end   -- safety: force break phase
             end
 
             if not isRunning or inst.dead then break end
 
-            -- ═══════════════════════════════
+            -- ═══════════════════════════════════════════════
             --  BREAK PHASE
-            --  Fire fist at 0.01 until tile disappears
-            -- ═══════════════════════════════
+            --  Fire fistR at 0.01 until tile detected as gone
+            --  OR until MAX_BREAK fires (safety fallback).
+            -- ═══════════════════════════════════════════════
             SetPhase("BREAKING", Color3.fromRGB(220,150,50))
             SetSt("[ BREAKING ]  "..tostring(itemCode), Color3.fromRGB(220,150,50))
 
+            local breakFires = 0
             while isRunning and not inst.dead do
                 fistR:FireServer(targetPos)
                 task.wait(FIRE_SPEED)
-                if not IsTileAt(targetPos) then break end  -- tile gone → go place
+                breakFires += 1
+                if not IsTileAt(targetPos) then break end   -- tile gone → go place
+                if breakFires >= MAX_BREAK then break end   -- safety: force place phase
             end
 
-            -- No delay — immediately loop back to place phase
+            -- Zero delay — immediately loop back to place phase
         end
 
         -- Cleanup on stop/exit
