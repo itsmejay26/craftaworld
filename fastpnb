@@ -1,6 +1,7 @@
--- AUTO FAST PNB v1.0
--- Live Tile Checker: Place → Detect Placed → Break → Detect Broken → Place → Repeat
--- Speed: 0.01 fire rate | Fully automatic — no manual hit count needed
+-- AUTO FAST PNB v2.0
+-- Tile Detection: Event-driven SurfaceGui ImageLabel watcher (ported from rotation script)
+-- Place → wTE detects tile placed → Break → wTE detects tile gone → Place → repeat
+-- Zero delay detection | 0.01 fire rate | Fully automatic
 
 -- ============ SINGLETON ============
 if _G.AutoFastPNBInst then
@@ -25,8 +26,7 @@ local invScroll  = invUI.Handle.Frame.Bottom.InventoryFrame.InventoryScroll
 
 -- ============ CONSTANTS ============
 local TILE_SIZE  = 4.5
-local FIRE_SPEED = 0.01   -- Place & break fire interval (fast)
-local CHECK_RATE = 0.01   -- Tile checker poll rate
+local FIRE_SPEED = 0.01   -- Place & break fire interval
 
 -- ============ STATE ============
 local isRunning      = false
@@ -102,42 +102,123 @@ local function GetTilePos()
     return nil, nil
 end
 
--- ============ LIVE WORLD TILE CHECKER ============
--- Searches for a foreground tile at the given tile grid coordinates.
--- Uses a TIGHT Z range (3 studs) so background / floor parts behind the playfield
--- are NOT counted.  Also filters by size so large decorative panels are ignored.
-local function IsTileAt(tileVec2)
-    local wx = tileVec2.X * TILE_SIZE
-    local wy = tileVec2.Y * TILE_SIZE
-    local cf = CFrame.new(wx, wy, 0)
-    -- Tight box: small XY so we stay within one tile cell, shallow Z so we
-    -- don't accidentally catch background geometry.
-    local searchBox = Vector3.new(TILE_SIZE * 0.75, TILE_SIZE * 0.75, 3)
+-- ============ WORLD TILE WATCHER (ported from rotation script) ============
+-- Watches workspace.Tiles → each BasePart panel has a SurfaceGui with ImageLabels.
+-- ImageLabel added   → tile placed   → sWT(x,y,true)
+-- ImageLabel removed → tile broken   → sWT(x,y,false)
+-- wTE(x,y) is a plain table lookup — zero delay, purely event-driven.
 
-    local params = OverlapParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local excludeList = {}
-    local char = player.Character
-    if char then table.insert(excludeList, char) end
-    params.FilterDescendantsInstances = excludeList
+local worldTileSet = {}
+local function wTE(pX,pY) return worldTileSet[pX..","..pY]==true end
+local function sWT(pX,pY,e) local k=pX..","..pY; if e then worldTileSet[k]=true else worldTileSet[k]=nil end end
 
-    local ok, parts = pcall(function()
-        return workspace:GetPartBoundsInBox(cf, searchBox, params)
-    end)
-    if not ok or not parts then return false end
+-- Panel layout: each entry is {panelWidthInTiles, panelHeightInTiles}
+local groupLayout={
+    {{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{5,5}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+}
+local gpPos={}; local x0,y0,gStep=15.75,267.75,36
+for r=1,8 do gpPos[r]={}; local yp=y0-gStep*(r-1)
+    for c=1,13 do gpPos[r][c]=Vector3.new(x0+gStep*(c-1),yp,-13.5) end
+end
 
-    for _, part in pairs(parts) do
-        if part:IsA("BasePart") and part ~= workspace.Terrain then
-            local sz = part.Size
-            -- Accept only parts that are roughly tile-sized in X and Y
-            -- (rejects giant background panels, thin decoration strips, etc.)
-            if sz.X <= TILE_SIZE * 1.5 and sz.Y <= TILE_SIZE * 1.5
-            and sz.X >= 0.8 and sz.Y >= 0.8 then
-                return true
-            end
+-- Find which panel (row,col) a 3D world part belongs to (nearest centroid)
+local function fndG(p)
+    local md=math.huge; local br,bc=1,1
+    for r=1,8 do for c=1,13 do
+        local d=(Vector3.new(p.X,p.Y,0)-Vector3.new(gpPos[r][c].X,gpPos[r][c].Y,0)).Magnitude
+        if d<md then md=d; br,bc=r,c end
+    end end
+    return br,bc
+end
+-- Convert an ImageLabel UDim2 offset position to local tile col/row within its panel
+local function pTI(u,gR,gC)
+    local gW=groupLayout[gR][gC][1]; local gH=groupLayout[gR][gC][2]
+    return math.clamp(math.floor(u.X.Offset/45+0.5),0,gW-1),
+           math.clamp(math.floor((u.Y.Offset+(gH-1)*45)/45+0.5),0,gH-1)
+end
+-- Convert panel (gR,gC) + local tile (lC,lR) → world tile grid coords (pX,pY)
+local function wTP(gR,gC,lC,lR)
+    local gp=gpPos[gR][gC]; local gW=groupLayout[gR][gC][1]; local gH=groupLayout[gR][gC][2]
+    local pX=math.floor((gp.X+(lC-(gW-1)/2)*TILE_SIZE)/TILE_SIZE+0.5)
+    local pY=math.floor((gp.Y+((gH-1)/2-lR)*TILE_SIZE)/TILE_SIZE+0.5)
+    if gW==5 then pX=pX-2 end; if gH==5 then pY=pY-2 end
+    return pX,pY
+end
+
+-- Per-part and per-SurfaceGui connection tables
+local tCn,sCn,mCn={},{},{}
+
+local function oIA(il,pt)  -- ImageLabel added → tile placed
+    if not il:IsA("ImageLabel") then return end
+    local gR,gC=fndG(pt.Position); local lC,lR=pTI(il.Position,gR,gC)
+    local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,true)
+end
+local function oIR(il,pt)  -- ImageLabel removed → tile broken
+    if not il:IsA("ImageLabel") then return end
+    local gR,gC=fndG(pt.Position); local lC,lR=pTI(il.Position,gR,gC)
+    local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,false)
+end
+local function wSG(sg2,pt)
+    if sCn[sg2] then return end; sCn[sg2]={}
+    table.insert(sCn[sg2], sg2.ChildAdded:Connect(function(c)   task.defer(function() oIA(c,pt) end) end))
+    table.insert(sCn[sg2], sg2.ChildRemoved:Connect(function(c) task.defer(function() oIR(c,pt) end) end))
+end
+local function uSG(sg2) if sCn[sg2] then for _,c in ipairs(sCn[sg2]) do c:Disconnect() end; sCn[sg2]=nil end end
+local function wTP2(pt)
+    if not pt:IsA("BasePart") or tCn[pt] then return end; tCn[pt]={}
+    local eg=pt:FindFirstChildOfClass("SurfaceGui"); if eg then wSG(eg,pt) end
+    table.insert(tCn[pt], pt.ChildAdded:Connect(function(c)
+        if c:IsA("SurfaceGui") then wSG(c,pt); task.defer(function() for _,il in ipairs(c:GetChildren()) do oIA(il,pt) end end) end
+    end))
+    table.insert(tCn[pt], pt.ChildRemoved:Connect(function(c) if c:IsA("SurfaceGui") then uSG(c) end end))
+end
+local function uTP(pt)
+    if tCn[pt] then for _,c in ipairs(tCn[pt]) do c:Disconnect() end; tCn[pt]=nil end
+    local s=pt:FindFirstChildOfClass("SurfaceGui"); if s then uSG(s) end
+end
+
+local function fullScan()
+    local tf=workspace:FindFirstChild("Tiles"); if not tf then return end
+    worldTileSet={}
+    for _,pt in ipairs(tf:GetChildren()) do
+        if pt:IsA("BasePart") then
+            local gR,gC=fndG(pt.Position)
+            local sg2=pt:FindFirstChildOfClass("SurfaceGui")
+            if sg2 then for _,il in ipairs(sg2:GetChildren()) do
+                if il:IsA("ImageLabel") then
+                    local lC,lR=pTI(il.Position,gR,gC); local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,true)
+                end
+            end end
         end
     end
-    return false
+end
+local worldWatching=false
+local function startWatching()
+    local tf=workspace:FindFirstChild("Tiles"); if not tf then return end
+    for _,p in ipairs(tf:GetChildren()) do wTP2(p) end
+    table.insert(mCn, tf.ChildAdded:Connect(function(p) wTP2(p) end))
+    table.insert(mCn, tf.ChildRemoved:Connect(function(p)
+        uTP(p)
+        if p:IsA("BasePart") then
+            local s=p:FindFirstChildOfClass("SurfaceGui")
+            if s then for _,il in ipairs(s:GetChildren()) do if il:IsA("ImageLabel") then oIR(il,p) end end end
+        end
+    end))
+end
+local function stopWatching()
+    for _,c in ipairs(mCn) do c:Disconnect() end; mCn={}
+    for p in pairs(tCn) do uTP(p) end
+    for s in pairs(sCn) do uSG(s) end
+end
+local function ensureWatching()
+    if not worldWatching then fullScan(); startWatching(); worldWatching=true end
 end
 
 -- ============ GUI HELPERS (same style as reference) ============
@@ -384,6 +465,7 @@ minBtn.MouseButton1Click:Connect(function()
 end)
 xBtn.MouseButton1Click:Connect(function()
     isRunning = false; inst.dead = true
+    stopWatching()
     for _, c in pairs(mainConns) do pcall(function() c:Disconnect() end) end
     for _, c in pairs(inst.connections) do pcall(function() c:Disconnect() end) end
     _G.AutoFastPNBInst = nil; sg:Destroy()
@@ -452,24 +534,27 @@ table.insert(inst.connections, RunService.Heartbeat:Connect(function()
     end
 end))
 
--- Live tile state display (polls target tile)
-local liveTileTarget = nil  -- set when running, also used for display when idle
-task.spawn(function()
-    while not inst.dead do
+-- Live tile state display — uses wTE (instant table lookup, no polling delay)
+local liveTileTarget = nil  -- Vector2 set when running, nil when idle
+table.insert(inst.connections, RunService.Heartbeat:Connect(function()
+    if inst.dead then return end
+    local checkPos = liveTileTarget
+    if not checkPos then
+        -- Show state of wherever the grid selection points right now
         local px, py = GetTilePos()
         if px and py then
             local offX, offY = GetTileOffset(selectedTileIdx)
-            local checkPos = liveTileTarget or Vector2.new(px+offX, py+offY)
-            local present = IsTileAt(checkPos)
-            if present then
-                tileStateLbl.Text = "PLACED"; tileStateLbl.TextColor3 = Color3.fromRGB(85,210,115)
-            else
-                tileStateLbl.Text = "EMPTY"; tileStateLbl.TextColor3 = Color3.fromRGB(220,85,85)
-            end
+            checkPos = Vector2.new(px+offX, py+offY)
         end
-        task.wait(CHECK_RATE)
     end
-end)
+    if checkPos then
+        if wTE(checkPos.X, checkPos.Y) then
+            tileStateLbl.Text = "PLACED"; tileStateLbl.TextColor3 = Color3.fromRGB(85,210,115)
+        else
+            tileStateLbl.Text = "EMPTY";  tileStateLbl.TextColor3 = Color3.fromRGB(220,85,85)
+        end
+    end
+end))
 
 -- ============ MAIN AUTO PNB LOOP ============
 playBtn.MouseButton1Click:Connect(function()
@@ -484,23 +569,28 @@ playBtn.MouseButton1Click:Connect(function()
     local targetPos = Vector2.new(px+offX, py+offY)
     liveTileTarget = targetPos   -- also drives the live tile state display
 
+    -- Start tile watcher if not already running
+    ensureWatching()
+
     isRunning = true
     SetSt("[ RUNNING ]  "..tostring(itemCode), Color3.fromRGB(75,210,105))
 
     task.spawn(function()
-        -- Safety caps: if tile detection lags/fails, we still cycle
-        -- instead of hanging in one phase forever.
-        -- 120 fires @ 0.01s ≈ 1.2s max place burst before forcing break
-        -- 600 fires @ 0.01s ≈ 6.0s max break burst before forcing place
-        local MAX_PLACE = 120
-        local MAX_BREAK = 600
+        -- Safety caps: wTE is instant but if a tile never registers (edge case),
+        -- these caps ensure we don't hang in one phase forever.
+        -- 150 fires @ 0.01s ≈ 1.5s max place burst
+        -- 800 fires @ 0.01s ≈ 8.0s max break burst
+        local MAX_PLACE = 150
+        local MAX_BREAK = 800
 
         while isRunning and not inst.dead do
 
             -- ═══════════════════════════════════════════════
             --  PLACE PHASE
-            --  Fire placeR at 0.01 until tile detected as present
-            --  OR until MAX_PLACE fires (safety fallback).
+            --  Fire placeR at 0.01 until wTE says tile exists.
+            --  wTE is a plain table lookup updated by ChildAdded
+            --  events — no delay, fires the same frame the game
+            --  registers the ImageLabel on the tile panel.
             -- ═══════════════════════════════════════════════
             SetPhase("PLACING", Color3.fromRGB(85,210,115))
             SetSt("[ PLACING ]  "..tostring(itemCode), Color3.fromRGB(85,210,115))
@@ -518,16 +608,17 @@ playBtn.MouseButton1Click:Connect(function()
                 placeR:FireServer(targetPos, slotN)
                 task.wait(FIRE_SPEED)
                 placeFires += 1
-                if IsTileAt(targetPos) then break end       -- tile appeared → go break
-                if placeFires >= MAX_PLACE then break end   -- safety: force break phase
+                if wTE(targetPos.X, targetPos.Y) then break end   -- tile appeared → break
+                if placeFires >= MAX_PLACE        then break end   -- safety fallback
             end
 
             if not isRunning or inst.dead then break end
 
             -- ═══════════════════════════════════════════════
             --  BREAK PHASE
-            --  Fire fistR at 0.01 until tile detected as gone
-            --  OR until MAX_BREAK fires (safety fallback).
+            --  Fire fistR at 0.01 until wTE says tile is gone.
+            --  No delay between phases — the moment wTE flips
+            --  false we are already back in place phase.
             -- ═══════════════════════════════════════════════
             SetPhase("BREAKING", Color3.fromRGB(220,150,50))
             SetSt("[ BREAKING ]  "..tostring(itemCode), Color3.fromRGB(220,150,50))
@@ -537,14 +628,14 @@ playBtn.MouseButton1Click:Connect(function()
                 fistR:FireServer(targetPos)
                 task.wait(FIRE_SPEED)
                 breakFires += 1
-                if not IsTileAt(targetPos) then break end   -- tile gone → go place
-                if breakFires >= MAX_BREAK then break end   -- safety: force place phase
+                if not wTE(targetPos.X, targetPos.Y) then break end  -- tile gone → place
+                if breakFires >= MAX_BREAK            then break end  -- safety fallback
             end
 
-            -- Zero delay — immediately loop back to place phase
+            -- Zero delay — immediately back to place
         end
 
-        -- Cleanup on stop/exit
+        -- Cleanup
         liveTileTarget = nil
         SetPhase("IDLE", Color3.fromRGB(140,125,180))
         if stLbl and stLbl.Parent then SetSt("[ IDLE ]", Color3.fromRGB(140,125,180)) end
@@ -558,4 +649,4 @@ stopBtn.MouseButton1Click:Connect(function()
     SetSt("[ STOPPED ]", Color3.fromRGB(185,150,150))
 end)
 
-print("[Auto Fast PnB v1.0] Ready.")
+print("[Auto Fast PnB v2.0] Ready. Tile watcher: event-driven (SurfaceGui ImageLabel).")
