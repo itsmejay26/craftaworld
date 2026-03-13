@@ -1,0 +1,816 @@
+-- AUTO FAST PNB v2.0
+-- Tile Detection: Event-driven SurfaceGui ImageLabel watcher (ported from rotation script)
+-- Place → wTE detects tile placed → Break → wTE detects tile gone → Place → repeat
+-- Zero delay detection | 0.01 fire rate | Fully automatic
+
+-- ============ SINGLETON ============
+if _G.AutoFastPNBInst then
+    _G.AutoFastPNBInst.dead = true
+    for _, c in pairs(_G.AutoFastPNBInst.connections or {}) do pcall(function() c:Disconnect() end) end
+end
+local inst = {dead=false, connections={}}
+_G.AutoFastPNBInst = inst
+
+-- ============ TELEPORT PERSISTENCE (Delta + multi-executor) ============
+-- Saves script source to file on first run, then queues it to auto-reload
+-- after every server switch. Works with Delta, Synapse X, KRNL, Fluxus, etc.
+do
+    local FILE = "AutoFastPNB_v2.lua"
+    -- Guard: only readfile if the file actually exists (prevents "Expected File But Got Directory")
+    local RELOAD = "if isfile and isfile('" .. FILE .. "') then loadstring(readfile('" .. FILE .. "'))() else warn('[Auto Fast PnB] File missing after teleport — re-execute manually.') end"
+
+    -- Only attempt to save once per session
+    if not _G._AutoFastPNB_FileSaved then
+        local src = nil
+
+        -- Delta executor: get_script_source()
+        if get_script_source then
+            pcall(function() src = get_script_source() end)
+        end
+        -- Synapse X fallback
+        if (not src or src == "") and syn and syn.get_script_source then
+            pcall(function() src = syn.get_script_source() end)
+        end
+        -- Generic fallback via script environment
+        if (not src or src == "") and getfenv then
+            pcall(function()
+                local env = getfenv(0)
+                if env and env.script and env.script.Source then
+                    src = env.script.Source
+                end
+            end)
+        end
+
+        if src and src ~= "" and writefile then
+            pcall(function() writefile(FILE, src) end)
+        end
+
+        -- Verify the file was actually written before marking it saved
+        if isfile and isfile(FILE) then
+            _G._AutoFastPNB_FileSaved = true
+        else
+            warn("[Auto Fast PnB] Could not save script file — teleport persistence disabled.")
+            warn("[Auto Fast PnB] To fix: save this script as '" .. FILE .. "' in your executor's workspace folder manually.")
+        end
+    end
+
+    -- Only queue the reload if the file is confirmed to exist
+    if _G._AutoFastPNB_FileSaved then
+        if queue_on_teleport then
+            pcall(function() queue_on_teleport(RELOAD) end)
+            print("[Auto Fast PnB] Teleport persistence: ON (queue_on_teleport)")
+        elseif syn and syn.queue_on_teleport then
+            pcall(function() syn.queue_on_teleport(RELOAD) end)
+            print("[Auto Fast PnB] Teleport persistence: ON (syn.queue_on_teleport)")
+        else
+            warn("[Auto Fast PnB] queue_on_teleport not supported — re-execute manually after server switch.")
+        end
+    end
+end
+
+-- ============ SERVICES ============
+local Players    = game:GetService("Players")
+local RS         = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local VIM        = game:GetService("VirtualInputManager")
+local HttpService = game:GetService("HttpService")
+local player     = Players.LocalPlayer
+local gui        = player:WaitForChild("PlayerGui")
+local Remotes    = RS:WaitForChild("Remotes")
+local placeR     = Remotes:WaitForChild("PlayerPlaceItem")
+local fistR      = Remotes:WaitForChild("PlayerFist")
+local invUI      = gui:WaitForChild("InventoryUI")
+local invScroll  = invUI.Handle.Frame.Bottom.InventoryFrame.InventoryScroll
+
+-- ============ SAFE MODE + WHITELIST ============
+local safeAutoStop  = true
+local safeAutoLeave = false
+local SAVE_FILE     = "AutoFastPNB_Whitelist.json"
+local whitelist     = {"54321_jaymes"}
+
+local function SaveWhitelist()
+    pcall(function() if writefile then writefile(SAVE_FILE, HttpService:JSONEncode(whitelist)) end end)
+end
+local function LoadWhitelist()
+    local ok, data = pcall(function()
+        if isfile and isfile(SAVE_FILE) then return HttpService:JSONDecode(readfile(SAVE_FILE)) end
+    end)
+    if ok and type(data)=="table" then whitelist=data end
+end
+local function IsWhitelisted(name)
+    for _,n in ipairs(whitelist) do if n:lower()==name:lower() then return true end end
+    return false
+end
+local function EnsureDefault()
+    if not IsWhitelisted("54321_jaymes") then table.insert(whitelist,1,"54321_jaymes"); SaveWhitelist() end
+end
+LoadWhitelist(); EnsureDefault()
+
+-- ============ CONSTANTS ============
+local TILE_SIZE  = 4.5
+local FIRE_SPEED = 0.01   -- Place & break fire interval
+
+-- ============ STATE ============
+local isRunning      = false
+local itemCode       = nil
+local lastSelSlot    = nil
+local isMinimized    = false
+local selectedTileIdx = 13  -- Default = center tile (player position)
+
+-- ============ SLOT / ITEM HELPERS (from reference) ============
+local scMap, scNext = {}, 10
+local function GetCode(k)
+    if not k or k=="" then return nil end
+    if scMap[k] then return scMap[k] end
+    scMap[k] = tostring(scNext); scNext += 1; return scMap[k]
+end
+local function SafeImg(o)
+    if not o then return nil end
+    local ok, img = pcall(function() return o.Image end)
+    return (ok and type(img)=="string" and img~="") and img or nil
+end
+local function SafeCol(o)
+    if not o then return nil end
+    local ok, c = pcall(function() return o.ImageColor3 end)
+    return (ok and typeof(c)=="Color3") and c or nil
+end
+local function CK(c) return math.round(c.R*255)..","..math.round(c.G*255)..","..math.round(c.B*255) end
+local function GetSlotKey(slot)
+    local d = slot:FindFirstChild("ItemDisplay"); if not d then return nil end
+    local l2 = d:FindFirstChild("layer2")
+    if l2 then
+        local img = SafeImg(l2)
+        if img then
+            local n = img:match("%d+"); local lc, dc = SafeCol(l2), SafeCol(d)
+            return n.."|"..(lc and CK(lc) or "0,0,0").."|"..(dc and CK(dc) or "0,0,0")
+        end
+    end
+    local img = SafeImg(d); return img and img:match("%d+") or nil
+end
+local function ParseAmt(t) return tonumber(tostring(t):match("%d+")) or 0 end
+local function FindSlotForCode(code)
+    if not code then return nil end
+    for _, slot in pairs(invScroll:GetChildren()) do
+        local n = tonumber(slot.Name); if not n then continue end
+        local k = GetSlotKey(slot); local c = k and GetCode(k)
+        local d = slot:FindFirstChild("ItemDisplay")
+        local a = d and ParseAmt((d:FindFirstChild("AmountText") or {}).Text or "") or 0
+        if c == code and a > 0 then return n end
+    end
+    return nil
+end
+local function GetItemTotal(code)
+    if not code then return 0 end; local tot = 0
+    for _, slot in pairs(invScroll:GetChildren()) do
+        if tonumber(slot.Name) then
+            local k = GetSlotKey(slot); local c = k and GetCode(k)
+            if c == code then
+                local d = slot:FindFirstChild("ItemDisplay")
+                if d then tot += ParseAmt((d:FindFirstChild("AmountText") or {}).Text or "") end
+            end
+        end
+    end
+    return tot
+end
+
+-- ============ PLAYER POSITION ============
+local hrpRef = nil
+local function RefHRP() local c = player.Character; hrpRef = c and c:FindFirstChild("HumanoidRootPart") end
+RefHRP()
+table.insert(inst.connections, player.CharacterAdded:Connect(function(c) task.wait(); hrpRef = c:FindFirstChild("HumanoidRootPart") end))
+local function GetTilePos()
+    local pos; if hrpRef and hrpRef.Parent then pos = hrpRef.Position end
+    if pos then return math.floor(pos.X/TILE_SIZE+0.5), math.floor(pos.Y/TILE_SIZE+0.5) end
+    return nil, nil
+end
+
+-- ============ WORLD TILE WATCHER (ported from rotation script) ============
+local worldTileSet = {}
+local function wTE(pX,pY) return worldTileSet[pX..","..pY]==true end
+local function sWT(pX,pY,e) local k=pX..","..pY; if e then worldTileSet[k]=true else worldTileSet[k]=nil end end
+
+local groupLayout={
+    {{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{8,5},{5,5}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+    {{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{8,8},{5,8}},
+}
+local gpPos={}; local x0,y0,gStep=15.75,267.75,36
+for r=1,8 do gpPos[r]={}; local yp=y0-gStep*(r-1)
+    for c=1,13 do gpPos[r][c]=Vector3.new(x0+gStep*(c-1),yp,-13.5) end
+end
+
+local function fndG(p)
+    local md=math.huge; local br,bc=1,1
+    for r=1,8 do for c=1,13 do
+        local d=(Vector3.new(p.X,p.Y,0)-Vector3.new(gpPos[r][c].X,gpPos[r][c].Y,0)).Magnitude
+        if d<md then md=d; br,bc=r,c end
+    end end
+    return br,bc
+end
+local function pTI(u,gR,gC)
+    local gW=groupLayout[gR][gC][1]; local gH=groupLayout[gR][gC][2]
+    return math.clamp(math.floor(u.X.Offset/45+0.5),0,gW-1),
+           math.clamp(math.floor((u.Y.Offset+(gH-1)*45)/45+0.5),0,gH-1)
+end
+local function wTP(gR,gC,lC,lR)
+    local gp=gpPos[gR][gC]; local gW=groupLayout[gR][gC][1]; local gH=groupLayout[gR][gC][2]
+    local pX=math.floor((gp.X+(lC-(gW-1)/2)*TILE_SIZE)/TILE_SIZE+0.5)
+    local pY=math.floor((gp.Y+((gH-1)/2-lR)*TILE_SIZE)/TILE_SIZE+0.5)
+    if gW==5 then pX=pX-2 end; if gH==5 then pY=pY-2 end
+    return pX,pY
+end
+
+local tCn,sCn,mCn={},{},{}
+
+local function oIA(il,pt)
+    if not il:IsA("ImageLabel") then return end
+    local gR,gC=fndG(pt.Position); local lC,lR=pTI(il.Position,gR,gC)
+    local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,true)
+end
+local function oIR(il,pt)
+    if not il:IsA("ImageLabel") then return end
+    local gR,gC=fndG(pt.Position); local lC,lR=pTI(il.Position,gR,gC)
+    local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,false)
+end
+local function wSG(sg2,pt)
+    if sCn[sg2] then return end; sCn[sg2]={}
+    table.insert(sCn[sg2], sg2.ChildAdded:Connect(function(c)   task.defer(function() oIA(c,pt) end) end))
+    table.insert(sCn[sg2], sg2.ChildRemoved:Connect(function(c) task.defer(function() oIR(c,pt) end) end))
+end
+local function uSG(sg2) if sCn[sg2] then for _,c in ipairs(sCn[sg2]) do c:Disconnect() end; sCn[sg2]=nil end end
+local function wTP2(pt)
+    if not pt:IsA("BasePart") or tCn[pt] then return end; tCn[pt]={}
+    local eg=pt:FindFirstChildOfClass("SurfaceGui"); if eg then wSG(eg,pt) end
+    table.insert(tCn[pt], pt.ChildAdded:Connect(function(c)
+        if c:IsA("SurfaceGui") then wSG(c,pt); task.defer(function() for _,il in ipairs(c:GetChildren()) do oIA(il,pt) end end) end
+    end))
+    table.insert(tCn[pt], pt.ChildRemoved:Connect(function(c) if c:IsA("SurfaceGui") then uSG(c) end end))
+end
+local function uTP(pt)
+    if tCn[pt] then for _,c in ipairs(tCn[pt]) do c:Disconnect() end; tCn[pt]=nil end
+    local s=pt:FindFirstChildOfClass("SurfaceGui"); if s then uSG(s) end
+end
+
+local function fullScan()
+    local tf=workspace:FindFirstChild("Tiles"); if not tf then return end
+    worldTileSet={}
+    for _,pt in ipairs(tf:GetChildren()) do
+        if pt:IsA("BasePart") then
+            local gR,gC=fndG(pt.Position)
+            local sg2=pt:FindFirstChildOfClass("SurfaceGui")
+            if sg2 then for _,il in ipairs(sg2:GetChildren()) do
+                if il:IsA("ImageLabel") then
+                    local lC,lR=pTI(il.Position,gR,gC); local pX,pY=wTP(gR,gC,lC,lR); sWT(pX,pY,true)
+                end
+            end end
+        end
+    end
+end
+local worldWatching=false
+local function startWatching()
+    local tf=workspace:FindFirstChild("Tiles"); if not tf then return end
+    for _,p in ipairs(tf:GetChildren()) do wTP2(p) end
+    table.insert(mCn, tf.ChildAdded:Connect(function(p) wTP2(p) end))
+    table.insert(mCn, tf.ChildRemoved:Connect(function(p)
+        uTP(p)
+        if p:IsA("BasePart") then
+            local s=p:FindFirstChildOfClass("SurfaceGui")
+            if s then for _,il in ipairs(s:GetChildren()) do if il:IsA("ImageLabel") then oIR(il,p) end end end
+        end
+    end))
+end
+local function stopWatching()
+    for _,c in ipairs(mCn) do c:Disconnect() end; mCn={}
+    for p in pairs(tCn) do uTP(p) end
+    for s in pairs(sCn) do uSG(s) end
+end
+local function ensureWatching()
+    if not worldWatching then fullScan(); startWatching(); worldWatching=true end
+end
+
+-- ============ ANTI-AFK JUMP ============
+local function pressKey(k)   VIM:SendKeyEvent(true,  k, false, game) end
+local function releaseKey(k) VIM:SendKeyEvent(false, k, false, game) end
+
+task.spawn(function()
+    while not inst.dead do
+        task.wait(60)
+        if inst.dead then break end
+        pressKey(Enum.KeyCode.Space)
+        task.wait(2)
+        releaseKey(Enum.KeyCode.Space)
+    end
+end)
+
+-- ============ GUI HELPERS ============
+local function MkCorner(p, r) Instance.new("UICorner", p).CornerRadius = UDim.new(0, r or 6) end
+local function MkStroke(p, col, th)
+    local s = Instance.new("UIStroke", p); s.Color = col; s.Thickness = th or 1; return s
+end
+local function MkTitleBtn(par, txt, xOff, bg, tc, ts)
+    local b = Instance.new("TextButton", par)
+    b.Size = UDim2.new(0,24,0,24); b.Position = UDim2.new(1,xOff,0.5,-12)
+    b.BackgroundColor3 = bg; b.BorderSizePixel = 0; b.Text = txt
+    b.TextColor3 = tc; b.TextSize = ts; b.Font = Enum.Font.GothamBold; MkCorner(b,5); return b
+end
+local function MkFrame(par, bg, y, h, xs, w)
+    local f = Instance.new("Frame", par)
+    f.Size = UDim2.new(w or 1,0,0,h); f.Position = UDim2.new(xs or 0,0,0,y)
+    f.BackgroundColor3 = bg; f.BorderSizePixel = 0; return f
+end
+local function MkLbl(par, txt, y, h, col, ts, font, xa)
+    local l = Instance.new("TextLabel", par)
+    l.Size = UDim2.new(1,0,0,h); l.Position = UDim2.new(0,0,0,y)
+    l.BackgroundTransparency = 1; l.Text = txt; l.TextColor3 = col
+    l.TextSize = ts; l.Font = font or Enum.Font.Gotham
+    l.TextXAlignment = xa or Enum.TextXAlignment.Left; return l
+end
+local function MkBtn(par, txt, y, h, xs, w, bg)
+    local b = Instance.new("TextButton", par)
+    b.Size = UDim2.new(w,0,0,h); b.Position = UDim2.new(xs,0,0,y)
+    b.BackgroundColor3 = bg; b.BorderSizePixel = 0; b.Text = txt
+    b.TextColor3 = Color3.fromRGB(255,255,255); b.TextSize = 13
+    b.Font = Enum.Font.GothamBold; MkCorner(b); return b
+end
+local function MkInfoBox(par, y)
+    local f = MkFrame(par, Color3.fromRGB(26,26,40), y, 36); MkCorner(f); MkStroke(f, Color3.fromRGB(52,52,88))
+    local nL = Instance.new("TextLabel", f)
+    nL.Size = UDim2.new(0.65,-6,1,0); nL.Position = UDim2.new(0,8,0,0)
+    nL.BackgroundTransparency = 1; nL.Text = "—"; nL.TextColor3 = Color3.fromRGB(215,215,255)
+    nL.TextSize = 13; nL.Font = Enum.Font.Gotham
+    nL.TextXAlignment = Enum.TextXAlignment.Left; nL.TextTruncate = Enum.TextTruncate.AtEnd
+    local aL = Instance.new("TextLabel", f)
+    aL.Size = UDim2.new(0.35,0,1,0); aL.Position = UDim2.new(0.65,0,0,0)
+    aL.BackgroundTransparency = 1; aL.TextColor3 = Color3.fromRGB(85,210,115)
+    aL.TextSize = 13; aL.Font = Enum.Font.GothamBold
+    aL.TextXAlignment = Enum.TextXAlignment.Right
+    Instance.new("UIPadding", aL).PaddingRight = UDim.new(0,8)
+    return nL, aL
+end
+local function MkCheckbox(par, txt, y, state, onChange)
+    local f = MkFrame(par, Color3.fromRGB(26,26,40), y, 26); MkCorner(f,5); MkStroke(f, Color3.fromRGB(52,52,82))
+    local chk = Instance.new("TextButton", f)
+    chk.Size=UDim2.new(0,18,0,18); chk.Position=UDim2.new(0,5,0.5,-9)
+    chk.BackgroundColor3=state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
+    chk.BorderSizePixel=0; chk.Text=state and "✓" or ""; chk.TextColor3=Color3.new(1,1,1)
+    chk.TextSize=12; chk.Font=Enum.Font.GothamBold; MkCorner(chk,4)
+    local lbl = Instance.new("TextLabel", f)
+    lbl.Size=UDim2.new(1,-30,1,0); lbl.Position=UDim2.new(0,28,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=txt; lbl.TextColor3=Color3.fromRGB(195,195,230)
+    lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    chk.MouseButton1Click:Connect(function()
+        state = not state
+        chk.BackgroundColor3 = state and Color3.fromRGB(42,150,70) or Color3.fromRGB(52,52,72)
+        chk.Text = state and "✓" or ""
+        if onChange then onChange(state) end
+    end)
+end
+
+local function MakeDraggable(bar, win, conns)
+    local drag, dSt, dPos = false, nil, nil
+    local function addC(c) if conns then table.insert(conns, c) end end
+    addC(bar.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            drag=true; dSt=i.Position; dPos=win.Position end end))
+    addC(UIS.InputChanged:Connect(function(i)
+        if not drag then return end
+        if i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch then
+            local d=i.Position-dSt
+            win.Position=UDim2.new(dPos.X.Scale,dPos.X.Offset+d.X,dPos.Y.Scale,dPos.Y.Offset+d.Y)
+        end end))
+    addC(UIS.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false end end))
+end
+
+-- ============ MAIN GUI ============
+local oldG = gui:FindFirstChild("AutoFastPNBGui"); if oldG then oldG:Destroy() end
+local sg = Instance.new("ScreenGui", gui)
+sg.Name = "AutoFastPNBGui"; sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true
+
+local W, HF, HM = 270, 300, 36
+local mainConns = {}
+local function addC(c) table.insert(mainConns, c) end
+
+local win = Instance.new("Frame", sg)
+win.Name = "Win"; win.Size = UDim2.new(0,W,0,HF)
+win.Position = UDim2.new(0.5,-W/2,0,80)
+win.BackgroundColor3 = Color3.fromRGB(20,20,28); win.BorderSizePixel = 0
+win.ClipsDescendants = true; MkCorner(win,10); MkStroke(win,Color3.fromRGB(75,75,115),1.5)
+
+-- Title bar
+local bar = MkFrame(win, Color3.fromRGB(32,32,48), 0, 36); bar.Size=UDim2.new(1,0,0,36); MkCorner(bar,10)
+local bp  = MkFrame(bar,  Color3.fromRGB(32,32,48), 0, 10); bp.Size=UDim2.new(1,0,0,10); bp.Position=UDim2.new(0,0,1,-10)
+MkLbl(bar,"⚡  Auto Fast PnB  v2.0",0,36,Color3.fromRGB(205,205,255),13,Enum.Font.GothamBold)
+local titleL = bar:FindFirstChildOfClass("TextLabel")
+titleL.Position = UDim2.new(0,12,0,0); titleL.Size = UDim2.new(1,-90,1,0)
+local minBtn = MkTitleBtn(bar,"−",-58,Color3.fromRGB(70,70,115),Color3.fromRGB(220,220,255),16)
+local xBtn   = MkTitleBtn(bar,"x",-30,Color3.fromRGB(185,40,40),Color3.fromRGB(255,255,255),14)
+
+-- Scrolling content
+local ct = Instance.new("ScrollingFrame", win)
+ct.Size = UDim2.new(1,0,1,-36); ct.Position = UDim2.new(0,0,0,36)
+ct.BackgroundTransparency = 1; ct.BorderSizePixel = 0; ct.ScrollBarThickness = 3
+ct.ScrollBarImageColor3 = Color3.fromRGB(100,100,150)
+ct.CanvasSize = UDim2.new(0,0,0,600); ct.ScrollingDirection = Enum.ScrollingDirection.Y
+local cpad = Instance.new("UIPadding", ct)
+cpad.PaddingLeft=UDim.new(0,12); cpad.PaddingRight=UDim.new(0,12)
+cpad.PaddingTop=UDim.new(0,10); cpad.PaddingBottom=UDim.new(0,10)
+
+local function Lbl(t,y) return MkLbl(ct,t,y,13,Color3.fromRGB(130,130,175),10,Enum.Font.GothamBold) end
+local function Div(y) return MkFrame(ct,Color3.fromRGB(52,52,82),y,1) end
+
+local yOff = 0
+
+-- ══════════════════════════════════════════
+--  1. SAFE MODE
+-- ══════════════════════════════════════════
+Lbl("SAFE MODE", yOff); yOff += 14
+MkCheckbox(ct, "Auto Stop  (stranger joins → stop)", yOff, true,  function(v) safeAutoStop=v  end); yOff += 28
+MkCheckbox(ct, "Auto Leave  (stranger joins → leave)",yOff, false, function(v) safeAutoLeave=v end); yOff += 30
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  2. WHITELIST
+-- ══════════════════════════════════════════
+Lbl("WHITELIST", yOff); yOff += 13
+local wlCountLbl = MkLbl(ct,"Users: 1",yOff,11,Color3.fromRGB(100,100,145),9); yOff += 12
+
+local WL_H = 48
+local wlFrame = Instance.new("ScrollingFrame", ct)
+wlFrame.Size=UDim2.new(1,0,0,WL_H); wlFrame.Position=UDim2.new(0,0,0,yOff)
+wlFrame.BackgroundColor3=Color3.fromRGB(22,22,34); wlFrame.BorderSizePixel=0
+wlFrame.ScrollBarThickness=3; wlFrame.ScrollBarImageColor3=Color3.fromRGB(80,80,130)
+wlFrame.CanvasSize=UDim2.new(0,0,0,0); wlFrame.ScrollingDirection=Enum.ScrollingDirection.Y
+MkCorner(wlFrame,5); MkStroke(wlFrame,Color3.fromRGB(52,52,82))
+Instance.new("UIPadding",wlFrame).PaddingLeft=UDim.new(0,6)
+yOff += WL_H + 5
+
+local function RefreshWLDisplay()
+    for _,c in pairs(wlFrame:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+    for i,name in ipairs(whitelist) do
+        local lbl=Instance.new("TextLabel",wlFrame)
+        lbl.Size=UDim2.new(1,0,0,14); lbl.Position=UDim2.new(0,0,0,(i-1)*15)
+        lbl.BackgroundTransparency=1; lbl.Text=(i==1 and "★ " or "  ")..name
+        lbl.TextColor3=(i==1) and Color3.fromRGB(255,220,80) or Color3.fromRGB(175,175,215)
+        lbl.TextSize=10; lbl.Font=Enum.Font.Gotham; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    end
+    wlFrame.CanvasSize=UDim2.new(0,0,0,#whitelist*15+4)
+    wlCountLbl.Text="Users: "..#whitelist
+end
+RefreshWLDisplay()
+
+local addRow=Instance.new("Frame",ct)
+addRow.Size=UDim2.new(1,0,0,24); addRow.Position=UDim2.new(0,0,0,yOff)
+addRow.BackgroundTransparency=1; addRow.BorderSizePixel=0; yOff += 28
+
+local addBox=Instance.new("TextBox",addRow)
+addBox.Size=UDim2.new(0.66,0,1,0); addBox.BackgroundColor3=Color3.fromRGB(26,26,40)
+addBox.BorderSizePixel=0; addBox.PlaceholderText="username..."
+addBox.PlaceholderColor3=Color3.fromRGB(75,75,110); addBox.TextColor3=Color3.fromRGB(210,210,255)
+addBox.TextSize=10; addBox.Font=Enum.Font.Gotham; addBox.ClearTextOnFocus=false; addBox.Text=""
+MkCorner(addBox,4); MkStroke(addBox,Color3.fromRGB(52,52,82))
+Instance.new("UIPadding",addBox).PaddingLeft=UDim.new(0,6)
+
+local addWlBtn=Instance.new("TextButton",addRow)
+addWlBtn.Size=UDim2.new(0.17,0,1,0); addWlBtn.Position=UDim2.new(0.68,0,0,0)
+addWlBtn.BackgroundColor3=Color3.fromRGB(40,130,60); addWlBtn.BorderSizePixel=0
+addWlBtn.Text="ADD"; addWlBtn.TextColor3=Color3.new(1,1,1); addWlBtn.TextSize=9; addWlBtn.Font=Enum.Font.GothamBold
+MkCorner(addWlBtn,4)
+
+local delWlBtn=Instance.new("TextButton",addRow)
+delWlBtn.Size=UDim2.new(0.13,0,1,0); delWlBtn.Position=UDim2.new(0.87,0,0,0)
+delWlBtn.BackgroundColor3=Color3.fromRGB(140,50,50); delWlBtn.BorderSizePixel=0
+delWlBtn.Text="DEL"; delWlBtn.TextColor3=Color3.new(1,1,1); delWlBtn.TextSize=9; delWlBtn.Font=Enum.Font.GothamBold
+MkCorner(delWlBtn,4)
+
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  3. ITEM SELECTION
+-- ══════════════════════════════════════════
+Lbl("HIGHLIGHTED IN INVENTORY", yOff); yOff += 14
+local hlN, hlA = MkInfoBox(ct, yOff); yOff += 42
+Lbl("SELECTED ITEM FOR PNB", yOff); yOff += 14
+local actN, actA = MkInfoBox(ct, yOff); yOff += 42
+local applyBtn = MkBtn(ct,"✔  APPLY ITEM",yOff,26,0,1,Color3.fromRGB(55,130,90))
+applyBtn.TextSize = 12; yOff += 32
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  4. TILE POSITION (live)
+-- ══════════════════════════════════════════
+Lbl("YOUR TILE POSITION", yOff); yOff += 13
+local posRow = MkFrame(ct, Color3.fromRGB(26,26,40), yOff, 24); MkCorner(posRow); MkStroke(posRow, Color3.fromRGB(52,52,88))
+local txL = Instance.new("TextLabel", posRow)
+txL.Size=UDim2.new(0.5,0,1,0); txL.Position=UDim2.new(0,8,0,0)
+txL.BackgroundTransparency=1; txL.Text="X: —"; txL.TextColor3=Color3.fromRGB(120,200,255)
+txL.TextSize=11; txL.Font=Enum.Font.GothamBold; txL.TextXAlignment=Enum.TextXAlignment.Left
+local tyL = Instance.new("TextLabel", posRow)
+tyL.Size=UDim2.new(0.5,-8,1,0); tyL.Position=UDim2.new(0.5,0,0,0)
+tyL.BackgroundTransparency=1; tyL.Text="Y: —"; tyL.TextColor3=Color3.fromRGB(120,200,255)
+tyL.TextSize=11; tyL.Font=Enum.Font.GothamBold; tyL.TextXAlignment=Enum.TextXAlignment.Left
+yOff += 30
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  5. 5×5 TILE SELECTOR
+-- ══════════════════════════════════════════
+Lbl("SELECT TARGET TILE  (✓ = selected)", yOff); yOff += 14
+local TS, TG = 38, 3
+local GS = 5*TS + 4*TG
+local gf = MkFrame(ct, Color3.new(0,0,0), yOff, GS)
+gf.Size=UDim2.new(0,GS,0,GS); gf.Position=UDim2.new(0,5,0,yOff); gf.BackgroundTransparency=1
+
+local selOffsetLbl
+local tileButtons = {}
+
+local function GetTileOffset(idx)
+    local row=math.floor((idx-1)/5); local col=(idx-1)%5
+    return col-2, 2-row
+end
+local function UpdateTileGrid()
+    local offX,offY=GetTileOffset(selectedTileIdx)
+    for i=1,25 do
+        local isCenter=(i==13); local isSel=(i==selectedTileIdx); local btn=tileButtons[i]
+        if isSel then
+            btn.BackgroundColor3=Color3.fromRGB(75,160,220); btn.Text="✓"; btn.TextColor3=Color3.fromRGB(255,255,255)
+        elseif isCenter then
+            btn.BackgroundColor3=Color3.fromRGB(55,40,90); btn.Text="●"; btn.TextColor3=Color3.fromRGB(175,140,220)
+        else
+            btn.BackgroundColor3=Color3.fromRGB(36,36,52); btn.Text=""; btn.TextColor3=Color3.fromRGB(255,255,255)
+        end
+    end
+    if selOffsetLbl then
+        selOffsetLbl.Text = (offX==0 and offY==0) and "On You  (0, 0)"
+            or string.format("Offset  X: %+d  Y: %+d", offX, offY)
+        selOffsetLbl.TextColor3=Color3.fromRGB(85,210,115)
+    end
+end
+
+for r=0,4 do for c2=0,4 do
+    local idx=r*5+c2+1; local isC=(r==2 and c2==2)
+    local btn=Instance.new("TextButton",gf)
+    btn.Size=UDim2.new(0,TS,0,TS); btn.Position=UDim2.new(0,c2*(TS+TG),0,r*(TS+TG))
+    btn.BackgroundColor3=isC and Color3.fromRGB(75,160,220) or Color3.fromRGB(36,36,52)
+    btn.BorderSizePixel=0; btn.Text=isC and "✓" or ""; btn.TextColor3=Color3.fromRGB(255,255,255)
+    btn.TextSize=13; btn.Font=Enum.Font.GothamBold; MkCorner(btn,5); tileButtons[idx]=btn
+    btn.MouseButton1Click:Connect(function() selectedTileIdx=idx; UpdateTileGrid() end)
+end end
+UpdateTileGrid()
+
+yOff += GS + 6
+local selRow=MkFrame(ct,Color3.fromRGB(26,26,40),yOff,22); MkCorner(selRow); MkStroke(selRow,Color3.fromRGB(52,52,88))
+selOffsetLbl=Instance.new("TextLabel",selRow)
+selOffsetLbl.Size=UDim2.new(1,-8,1,0); selOffsetLbl.Position=UDim2.new(0,8,0,0)
+selOffsetLbl.BackgroundTransparency=1; selOffsetLbl.Text="On You  (0, 0)"
+selOffsetLbl.TextColor3=Color3.fromRGB(85,210,115)
+selOffsetLbl.TextSize=11; selOffsetLbl.Font=Enum.Font.GothamBold
+selOffsetLbl.TextXAlignment=Enum.TextXAlignment.Center
+yOff += 28
+Div(yOff); yOff += 8
+
+-- ══════════════════════════════════════════
+--  6. LIVE TILE STATE  +  STATUS  +  BUTTONS
+-- ══════════════════════════════════════════
+local tileStateRow=MkFrame(ct,Color3.fromRGB(20,20,28),yOff,28); MkCorner(tileStateRow); MkStroke(tileStateRow,Color3.fromRGB(52,52,88))
+local phaseLbl=Instance.new("TextLabel",tileStateRow)
+phaseLbl.Size=UDim2.new(0.5,0,1,0); phaseLbl.BackgroundTransparency=1; phaseLbl.Text="IDLE"
+phaseLbl.TextColor3=Color3.fromRGB(140,125,180); phaseLbl.TextSize=11; phaseLbl.Font=Enum.Font.GothamBold
+phaseLbl.TextXAlignment=Enum.TextXAlignment.Center
+local tileStateLbl=Instance.new("TextLabel",tileStateRow)
+tileStateLbl.Size=UDim2.new(0.5,0,1,0); tileStateLbl.Position=UDim2.new(0.5,0,0,0)
+tileStateLbl.BackgroundTransparency=1; tileStateLbl.Text="EMPTY"
+tileStateLbl.TextColor3=Color3.fromRGB(170,90,90); tileStateLbl.TextSize=11; tileStateLbl.Font=Enum.Font.GothamBold
+tileStateLbl.TextXAlignment=Enum.TextXAlignment.Center
+yOff += 32
+
+local stLbl=MkLbl(ct,"[ IDLE ]",yOff,15,Color3.fromRGB(140,125,180),10)
+stLbl.TextTruncate=Enum.TextTruncate.AtEnd; yOff += 18
+
+local playBtn=MkBtn(ct,"▶  START",yOff,30,0,0.48,Color3.fromRGB(42,150,70))
+local stopBtn=MkBtn(ct,"■  STOP", yOff,30,0.52,0.48,Color3.fromRGB(170,42,42)); yOff += 36
+
+ct.CanvasSize = UDim2.new(0,0,0,yOff+10)
+MakeDraggable(bar, win, mainConns)
+
+local function SetSt(txt, col) stLbl.Text = txt; stLbl.TextColor3 = col or Color3.fromRGB(150,150,185) end
+local function SetPhase(txt, col)
+    phaseLbl.Text = txt; phaseLbl.TextColor3 = col or Color3.fromRGB(140,125,180)
+end
+
+-- ── Minimize / Close ─────────────────────────────────────────────
+minBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then ct.Visible=false; win.Size=UDim2.new(0,W,0,HM); bp.Visible=false; minBtn.Text="+"
+    else win.Size=UDim2.new(0,W,0,HF); ct.Visible=true; bp.Visible=true; minBtn.Text="−" end
+end)
+xBtn.MouseButton1Click:Connect(function()
+    isRunning = false; inst.dead = true
+    stopWatching()
+    for _, c in pairs(mainConns) do pcall(function() c:Disconnect() end) end
+    for _, c in pairs(inst.connections) do pcall(function() c:Disconnect() end) end
+    _G.AutoFastPNBInst = nil; sg:Destroy()
+end)
+
+-- ── Apply item button ─────────────────────────────────────────────
+applyBtn.MouseButton1Click:Connect(function()
+    if not lastSelSlot then SetSt("Nothing highlighted!", Color3.fromRGB(220,175,40)); return end
+    local k = GetSlotKey(lastSelSlot)
+    if not k then SetSt("Slot is empty!", Color3.fromRGB(220,85,85)); return end
+    local c = GetCode(k); itemCode = c; actN.Text = c
+    local tot = GetItemTotal(c); actA.Text = "x"..tot
+    actA.TextColor3 = tot>0 and Color3.fromRGB(85,210,115) or Color3.fromRGB(220,85,85)
+    SetSt("Item set: "..c, Color3.fromRGB(85,170,220))
+end)
+
+-- ============ BACKGROUND TASKS ============
+
+task.spawn(function()
+    local lSel = nil
+    while not inst.dead do
+        local found = false
+        for _, slot in pairs(invScroll:GetChildren()) do
+            if tonumber(slot.Name) then
+                local hl = slot:FindFirstChild("SelectionHighlight")
+                if hl and hl.Visible then
+                    found = true; lastSelSlot = slot
+                    if lSel ~= slot then
+                        lSel = slot
+                        local k = GetSlotKey(slot); local c = k and GetCode(k)
+                        local d = slot:FindFirstChild("ItemDisplay")
+                        local ao = d and d:FindFirstChild("AmountText")
+                        local amt = ao and ao.Text~="" and ("x"..ao.Text) or ""
+                        hlN.Text = c or "Empty"; hlA.Text = amt
+                    end; break
+                end
+            end
+        end
+        if not found then lSel=nil; lastSelSlot=nil; hlN.Text="—"; hlA.Text="" end
+        task.wait(0.1)
+    end
+end)
+
+task.spawn(function()
+    while not inst.dead do
+        if itemCode then
+            local tot = GetItemTotal(itemCode); actA.Text = "x"..tot
+            actA.TextColor3 = tot>0 and Color3.fromRGB(85,210,115) or Color3.fromRGB(220,85,85)
+        end
+        task.wait(0.5)
+    end
+end)
+
+local ltx, lty = nil, nil
+table.insert(inst.connections, RunService.Heartbeat:Connect(function()
+    if inst.dead then return end
+    local pos; if hrpRef and hrpRef.Parent then pos = hrpRef.Position end
+    if pos then
+        local tx = math.floor(pos.X/TILE_SIZE+0.5); local ty = math.floor(pos.Y/TILE_SIZE+0.5)
+        if tx~=ltx or ty~=lty then ltx=tx; lty=ty; txL.Text="X: "..tostring(tx); tyL.Text="Y: "..tostring(ty) end
+    else
+        if ltx~=nil then ltx=nil; lty=nil; txL.Text="X: —"; tyL.Text="Y: —" end
+    end
+end))
+
+local liveTileTarget = nil
+table.insert(inst.connections, RunService.Heartbeat:Connect(function()
+    if inst.dead then return end
+    local checkPos = liveTileTarget
+    if not checkPos then
+        local px, py = GetTilePos()
+        if px and py then
+            local offX, offY = GetTileOffset(selectedTileIdx)
+            checkPos = Vector2.new(px+offX, py+offY)
+        end
+    end
+    if checkPos then
+        if wTE(checkPos.X, checkPos.Y) then
+            tileStateLbl.Text = "PLACED"; tileStateLbl.TextColor3 = Color3.fromRGB(85,210,115)
+        else
+            tileStateLbl.Text = "EMPTY";  tileStateLbl.TextColor3 = Color3.fromRGB(220,85,85)
+        end
+    end
+end))
+
+-- ============ MAIN AUTO PNB LOOP ============
+playBtn.MouseButton1Click:Connect(function()
+    if isRunning then return end
+    if not itemCode then SetSt("No item selected!", Color3.fromRGB(220,85,85)); return end
+
+    local px, py = GetTilePos()
+    if not px or not py then SetSt("Can't detect tile position!", Color3.fromRGB(220,85,85)); return end
+
+    local offX, offY = GetTileOffset(selectedTileIdx)
+    local targetPos = Vector2.new(px+offX, py+offY)
+    liveTileTarget = targetPos
+
+    ensureWatching()
+
+    isRunning = true
+    SetSt("[ RUNNING ]  "..tostring(itemCode), Color3.fromRGB(75,210,105))
+
+    task.spawn(function()
+        local MAX_PLACE = 150
+        local MAX_BREAK = 800
+
+        while isRunning and not inst.dead do
+
+            SetPhase("PLACING", Color3.fromRGB(85,210,115))
+            SetSt("[ PLACING ]  "..tostring(itemCode), Color3.fromRGB(85,210,115))
+
+            local placeFires = 0
+            while isRunning and not inst.dead do
+                local slotN = FindSlotForCode(itemCode)
+                if not slotN then
+                    isRunning = false
+                    liveTileTarget = nil
+                    SetPhase("IDLE", Color3.fromRGB(140,125,180))
+                    SetSt("[ STOPPED — Item empty! ]", Color3.fromRGB(220,85,85))
+                    break
+                end
+                placeR:FireServer(targetPos, slotN)
+                task.wait(FIRE_SPEED)
+                placeFires += 1
+                if wTE(targetPos.X, targetPos.Y) then break end
+                if placeFires >= MAX_PLACE        then break end
+            end
+
+            if not isRunning or inst.dead then break end
+
+            SetPhase("BREAKING", Color3.fromRGB(220,150,50))
+            SetSt("[ BREAKING ]  "..tostring(itemCode), Color3.fromRGB(220,150,50))
+
+            local breakFires = 0
+            while isRunning and not inst.dead do
+                fistR:FireServer(targetPos)
+                task.wait(FIRE_SPEED)
+                breakFires += 1
+                if not wTE(targetPos.X, targetPos.Y) then break end
+                if breakFires >= MAX_BREAK            then break end
+            end
+        end
+
+        liveTileTarget = nil
+        SetPhase("IDLE", Color3.fromRGB(140,125,180))
+        if stLbl and stLbl.Parent then SetSt("[ IDLE ]", Color3.fromRGB(140,125,180)) end
+    end)
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+    isRunning = false
+    liveTileTarget = nil
+    SetPhase("IDLE", Color3.fromRGB(140,125,180))
+    SetSt("[ STOPPED ]", Color3.fromRGB(185,150,150))
+end)
+
+addWlBtn.MouseButton1Click:Connect(function()
+    local name = addBox.Text:match("^%s*(.-)%s*$")
+    if name=="" then return end
+    if IsWhitelisted(name) then addBox.Text=""; return end
+    table.insert(whitelist, name); SaveWhitelist(); RefreshWLDisplay(); addBox.Text=""
+    SetSt("WL: added "..name, Color3.fromRGB(85,210,115))
+end)
+delWlBtn.MouseButton1Click:Connect(function()
+    local name = addBox.Text:match("^%s*(.-)%s*$")
+    if name=="" then
+        if #whitelist>1 then
+            local removed=table.remove(whitelist); SaveWhitelist(); RefreshWLDisplay()
+            SetSt("WL: removed "..removed, Color3.fromRGB(220,150,50))
+        end; return
+    end
+    if name:lower()=="54321_jaymes" then SetSt("WL: can't remove default", Color3.fromRGB(220,85,85)); return end
+    for i,n in ipairs(whitelist) do
+        if n:lower()==name:lower() then
+            table.remove(whitelist,i); SaveWhitelist(); RefreshWLDisplay()
+            SetSt("WL: removed "..n, Color3.fromRGB(220,150,50)); addBox.Text=""; return
+        end
+    end
+    SetSt("WL: not found", Color3.fromRGB(220,85,85))
+end)
+
+table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
+    if plr==player then return end
+    if IsWhitelisted(plr.Name) then return end
+    if safeAutoStop then
+        isRunning=false; liveTileTarget=nil
+        SetPhase("IDLE", Color3.fromRGB(140,125,180))
+        SetSt("SAFE STOP: "..plr.Name.." joined", Color3.fromRGB(220,175,40))
+    end
+    if safeAutoLeave then
+        SetSt("LEAVING: "..plr.Name.." joined", Color3.fromRGB(220,85,85))
+        task.wait(0.2)
+        local kicked=false
+        pcall(function() player:Kick("Safe Mode: "..plr.Name.." joined"); kicked=true end)
+        if not kicked then
+            pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, player) end)
+        end
+    end
+end))
+
+print("[Auto Fast PnB v2.0] Ready. Tile watcher: event-driven. Teleport persistence: active.")
