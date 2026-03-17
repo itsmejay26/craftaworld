@@ -228,6 +228,12 @@ do
         -- Extra settle for tile watcher
         task.wait(1.5)
 
+        -- Store which world we just joined so RunCycle can skip
+        -- the joinWorld() call for it (we're already here)
+        if pendingName ~= "" then
+            _G._MFRot_JoinedWorld = pendingName
+        end
+
         -- Remove lobby overlay — full GUI builds below
         if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
         local oldLobby = gui:FindFirstChild("MFRot_LobbyGui")
@@ -1514,28 +1520,46 @@ local function RunCycle()
             local skipThisWorld = false
 
             -- ── JOIN FARM WORLD ───────────────────────────────────
-            SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
-                Color3.fromRGB(180, 180, 255))
-            SaveProgress(true)  -- autoResume: farm is switching worlds
-            joinWorld(farmWorld)
-            if not waitForWorldLoad(90) then
-                SetStatus("⚠ Load timeout: " .. farmWorld .. " — retrying",
-                    Color3.fromRGB(255, 80, 80))
+            -- If _G._MFRot_JoinedWorld matches this world we just
+            -- arrived here via the autoexec lobby join — skip the
+            -- joinWorld() call since we're already inside it.
+            local alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
+            if alreadyHere then
+                -- Clear the flag so subsequent worlds join normally
+                _G._MFRot_JoinedWorld = nil
+                SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
+                    .. " (already here)", Color3.fromRGB(150, 255, 180))
+                SaveProgress(true)
+                -- Reset tile watcher for this world
+                stopWatching(); worldWatching = false
+                fullScan(); startWatching(); worldWatching = true
+            else
+                SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
+                    Color3.fromRGB(180, 180, 255))
+                SaveProgress(true)  -- autoResume: farm is switching worlds
                 joinWorld(farmWorld)
-                if not waitForWorldLoad(60) then
-                    SetStatus("⚠ Failed to load " .. farmWorld .. " — skipping",
+                if not waitForWorldLoad(90) then
+                    SetStatus("⚠ Load timeout: " .. farmWorld .. " — retrying",
                         Color3.fromRGB(255, 80, 80))
-                    task.wait(3)
-                    skipThisWorld = true
+                    joinWorld(farmWorld)
+                    if not waitForWorldLoad(60) then
+                        SetStatus("⚠ Failed to load " .. farmWorld .. " — skipping",
+                            Color3.fromRGB(255, 80, 80))
+                        task.wait(3)
+                        skipThisWorld = true
+                    end
                 end
             end
 
             if not skipThisWorld then
                 if not guard() then break end
 
-                -- Reset tile watcher for the new world
-                stopWatching(); worldWatching = false
-                fullScan(); startWatching(); worldWatching = true
+                -- Reset tile watcher only if we didn't already do it
+                -- in the alreadyHere branch above
+                if not alreadyHere then
+                    stopWatching(); worldWatching = false
+                    fullScan(); startWatching(); worldWatching = true
+                end
 
                 -- ── HARVEST ───────────────────────────────────────
                 if not skipHarvest then
@@ -1572,12 +1596,21 @@ local function RunCycle()
 
                 -- ── JOIN STORAGE WORLD ────────────────────────────
                 currentPhase = "going_storage"; SaveProgress(true)
-                SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
-                joinWorld(storageWorld)
-                if not waitForWorldLoad(90) then
-                    SetStatus("⚠ Storage world load timeout!", Color3.fromRGB(255, 80, 80))
+                local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
+                if alreadyAtStorage then
+                    _G._MFRot_JoinedWorld = nil
+                    SetStatus("STORAGE " .. storageWorld .. " (already here)",
+                        Color3.fromRGB(150, 255, 180))
+                    stopWatching(); worldWatching = false
+                    fullScan(); startWatching(); worldWatching = true
+                else
+                    SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
                     joinWorld(storageWorld)
-                    waitForWorldLoad(60)
+                    if not waitForWorldLoad(90) then
+                        SetStatus("⚠ Storage world load timeout!", Color3.fromRGB(255, 80, 80))
+                        joinWorld(storageWorld)
+                        waitForWorldLoad(60)
+                    end
                 end
                 if not guard() then break end
 
