@@ -1,24 +1,19 @@
 --[[
     MFRotation_Start.lua
     Run this once to show the Multi Farm Rotation GUI.
-    AutoWorldSwitch.lua in your Autoexecute folder does everything else.
+    MFRotation_Main.lua in your Autoexecute folder does everything else.
 ]]
-
 local gui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-
 -- The autoexec already built the GUI — just show it
 local mfGui = gui:FindFirstChild("MFRotGui")
 if not mfGui then
-    warn("[MFRot] GUI not found. Make sure AutoWorldSwitch.lua is in your Autoexecute folder.")
+    warn("[MFRot] GUI not found. Make sure MFRotation_Main.lua is in your Autoexecute folder.")
     warn("[MFRot] Rejoin the game and run this script again.")
     return
 end
-
 local main = mfGui:FindFirstChild("Main")
 if not main then return end
-
 main.Visible = true
-
 -- Un-minimize if needed
 for _, c in pairs(main:GetDescendants()) do
     if c:IsA("TextButton") and c.Text == "+" then
@@ -29,5 +24,4 @@ for _, c in pairs(main:GetDescendants()) do
         break
     end
 end
-
 print("[MFRot] GUI ready — configure and press START.")
