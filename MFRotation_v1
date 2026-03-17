@@ -1,96 +1,50 @@
 --[[
     MFRotation_Start.lua  ·  STARTUP SCRIPT
-    ═══════════════════════════════════════════════════════════════
-    Execute this ONCE manually to start Multi Farm Rotation.
-
-    What it does:
-      • Loads AutoWorldSwitch.lua from the Autoexecute folder
-        (or from the workspace root if already saved there)
-      • This brings up the full farm GUI
-      • Configure your worlds, items, storage world, then press START
-
-    After that, everything is automatic — AutoWorldSwitch.lua
-    handles every server switch, world join, and farm resume on
-    its own. You never need to execute anything again.
-
-    HOW TO USE:
-      1. Put AutoWorldSwitch.lua in your Autoexecute folder
-      2. Execute THIS script once
-      3. Set up the GUI and press START
-      4. Let it run — it handles everything from here
-    ═══════════════════════════════════════════════════════════════
+    Execute this once to show the Multi Farm Rotation GUI.
+    AutoWorldSwitch.lua runs automatically via Autoexecute.
 ]]
 
--- Try loading from workspace root first (fastest — already saved by autoexec)
-local WORKSPACE_FILE  = "AutoWorldSwitch.lua"
--- Fallback: load directly from Autoexecute folder
-local AUTOEXEC_FILE   = "../Autoexecute/AutoWorldSwitch.lua"
+local player = game:GetService("Players").LocalPlayer
+local gui    = player:WaitForChild("PlayerGui")
 
-local function tryLoad(path)
-    if not (isfile and isfile(path)) then return false end
-    local ok, src = pcall(readfile, path)
-    if not ok or not src or src == "" then return false end
-    local ok2, fn = pcall(loadstring, src)
-    if not ok2 or not fn then
-        warn("[MFRot Start] Compile error in " .. path .. ": " .. tostring(fn))
-        return false
-    end
-    local ok3, err = pcall(fn)
-    if not ok3 then
-        warn("[MFRot Start] Runtime error: " .. tostring(err))
-        return false
-    end
-    print("[MFRot Start] Loaded from: " .. path)
-    return true
-end
+-- If the GUI is already running (autoexec loaded it), just show it
+local mfGui = gui:FindFirstChild("MFRotGui")
 
--- Try workspace root first, then Autoexecute folder
-if tryLoad(WORKSPACE_FILE) then
-    -- success
-elseif tryLoad(AUTOEXEC_FILE) then
-    -- success
+if mfGui then
+    local main = mfGui:FindFirstChild("Main")
+    if main then
+        main.Visible = true
+        -- If minimized, expand it
+        for _, child in pairs(main:GetDescendants()) do
+            if child:IsA("TextButton") and child.Text == "+" then
+                child.Text = "−"
+                main.Size  = UDim2.new(0, 360, 0, 396)
+                local sf   = main:FindFirstChildOfClass("ScrollingFrame")
+                if sf then sf.Visible = true end
+                break
+            end
+        end
+    end
+    print("[MFRot Start] GUI shown.")
+
 else
-    -- Neither found — show a clear error in chat/console
-    warn("══════════════════════════════════════════════════")
-    warn("[MFRot Start] ERROR: AutoWorldSwitch.lua not found!")
-    warn("[MFRot Start] Make sure AutoWorldSwitch.lua is in")
-    warn("[MFRot Start] your executor's Autoexecute folder.")
-    warn("══════════════════════════════════════════════════")
-
-    -- Show a small error GUI so it's visible in-game too
-    local player  = game:GetService("Players").LocalPlayer
-    local gui     = player:WaitForChild("PlayerGui")
-    local old     = gui:FindFirstChild("MFRot_StartErr")
-    if old then old:Destroy() end
-
-    local sg = Instance.new("ScreenGui", gui)
-    sg.Name = "MFRot_StartErr"; sg.ResetOnSpawn = false
-    sg.IgnoreGuiInset = true; sg.DisplayOrder = 9999
-
-    local bg = Instance.new("Frame", sg)
-    bg.Size = UDim2.new(0, 340, 0, 72)
-    bg.Position = UDim2.new(0.5, -170, 0.5, -36)
-    bg.BackgroundColor3 = Color3.fromRGB(30, 14, 14)
-    bg.BorderSizePixel = 0
-    Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
-    local s = Instance.new("UIStroke", bg); s.Color = Color3.fromRGB(180, 50, 50); s.Thickness = 1.5
-
-    local t1 = Instance.new("TextLabel", bg)
-    t1.Size = UDim2.new(1, -12, 0, 22); t1.Position = UDim2.new(0, 10, 0, 8)
-    t1.BackgroundTransparency = 1; t1.Text = "Multi Farm Rotation — Setup Error"
-    t1.TextColor3 = Color3.fromRGB(255, 120, 100); t1.TextSize = 11
-    t1.Font = Enum.Font.GothamBold; t1.TextXAlignment = Enum.TextXAlignment.Left
-
-    local t2 = Instance.new("TextLabel", bg)
-    t2.Size = UDim2.new(1, -12, 0, 36); t2.Position = UDim2.new(0, 10, 0, 30)
-    t2.BackgroundTransparency = 1
-    t2.Text = "AutoWorldSwitch.lua not found.\nPlace it in your Autoexecute folder, then re-execute."
-    t2.TextColor3 = Color3.fromRGB(220, 180, 170); t2.TextSize = 9
-    t2.Font = Enum.Font.Gotham; t2.TextXAlignment = Enum.TextXAlignment.Left
-    t2.TextWrapped = true
-
-    -- Auto-dismiss after 10 seconds
-    task.delay(10, function()
-        if sg and sg.Parent then sg:Destroy() end
-    end)
+    -- Autoexec hasn't fired yet — load from workspace root
+    -- (AutoWorldSwitch.lua saves itself here on first run)
+    local FILE = "AutoWorldSwitch.lua"
+    if isfile and isfile(FILE) then
+        local ok, src = pcall(readfile, FILE)
+        if ok and src and src ~= "" then
+            local ok2, fn = pcall(loadstring, src)
+            if ok2 and fn then
+                pcall(fn)
+                print("[MFRot Start] Loaded AutoWorldSwitch.lua")
+            else
+                warn("[MFRot Start] Failed to compile AutoWorldSwitch.lua")
+            end
+        end
+    else
+        warn("[MFRot Start] AutoWorldSwitch.lua not found in workspace.")
+        warn("[MFRot Start] Make sure AutoWorldSwitch.lua is in your Autoexecute folder.")
+        warn("[MFRot Start] It will save itself to workspace on first load.")
+    end
 end
