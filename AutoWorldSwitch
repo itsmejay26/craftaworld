@@ -174,12 +174,19 @@ local placeR  = Remotes:WaitForChild("PlayerPlaceItem")
 local fstR    = Remotes:WaitForChild("PlayerFist")
 
 local playerDropR, uiPromptR
-pcall(function() playerDropR = Remotes:WaitForChild("PlayerDrop", 5) end)
+pcall(function() playerDropR = Remotes:WaitForChild("PlayerDrop", 10) end)
 pcall(function()
-    local mgr = RS:WaitForChild("Managers", 5)
+    -- Try standard path first
+    local mgr = RS:WaitForChild("Managers", 10)
     if mgr then
-        local uim = mgr:WaitForChild("UIManager", 5)
-        if uim then uiPromptR = uim:WaitForChild("UIPromptEvent", 5) end
+        local uim = mgr:WaitForChild("UIManager", 10)
+        if uim then uiPromptR = uim:WaitForChild("UIPromptEvent", 10) end
+    end
+    -- Fallback: search RS for UIPromptEvent directly
+    if not uiPromptR then
+        for _, v in pairs(RS:GetDescendants()) do
+            if v.Name == "UIPromptEvent" then uiPromptR = v; break end
+        end
     end
 end)
 
@@ -200,7 +207,7 @@ if not invScroll then warn("[MFRot] invScroll not found"); return end
 local TILE_SIZE     = 4.5
 local BREAK_FLOOR_Y = 7          -- absolute floor; never break below
 local FARM_TOP_Y    = 59         -- highest harvestable row
-local FARM_BOT_Y    = 9          -- lowest harvestable row (>BREAK_FLOOR_Y)
+local FARM_BOT_Y    = 7          -- lowest harvestable row (Y7 is the last layer)
 local TRAV_LEFT     = 0
 local TRAV_RIGHT    = 100
 local JMP_RIGHT     = 99
@@ -396,11 +403,10 @@ local function WriteAllSaves(d)
     end)
 end
 
--- Called at every phase transition — async so it never blocks the loop
--- autoResume=true means: when the script reloads after a server switch,
--- automatically call RunCycle() without user pressing START.
-local function SaveProgress(autoResume)
-    task.spawn(function()
+-- SaveProgress: sync=true means it blocks until written (use before world switches).
+-- sync=false (default) runs async so it never blocks the farm loop.
+local function SaveProgress(autoResume, sync)
+    local function doSave()
         pcall(function()
             local all = LoadAllSaves()
             local wlCopy, wlst = {}, {}
@@ -426,7 +432,12 @@ local function SaveProgress(autoResume)
             }
             WriteAllSaves(all)
         end)
-    end)
+    end
+    if sync then
+        doSave()  -- blocks until written
+    else
+        task.spawn(doSave)
+    end
 end
 
 local function ClearAutoResume()
@@ -929,12 +940,15 @@ local function RunHarvest(guardFn, resumeRowY)
         end
         stopAll(); if not guardFn() then return false end
 
-        -- ── SWEEP LEFT (miss cleanup) ─────────────────────────
+        -- ── SWEEP LEFT — fires rowY AND belowY (RotFarm v3.1 pattern) ──
+        -- During left sweep: harvest current row misses AND the row below
+        -- simultaneously. This matches how RotFarm v3.1 harvests each batch.
+        local belowY = rowY - 2
         hClearPend()
-        SetStatus("HARVEST " .. ri .. "/" .. #rows .. " Y=" .. rowY .. " ←",
+        SetStatus("HARVEST " .. ri .. "/" .. #rows .. " Y=" .. rowY .. " ← (below=" .. belowY .. ")",
             Color3.fromRGB(220, 160, 60))
         local _, postRY = GetTileIndex()
-        -- Only sweep left if we're still on the row (may have already fallen)
+        -- Only sweep left if still on the row
         if postRY and postRY >= rowY - 1 then
             lr = tick(); startMoveLeft()
             while guardFn() do
@@ -948,7 +962,9 @@ local function RunHarvest(guardFn, resumeRowY)
                     lr = tick(); startMoveLeft(); continue
                 end
                 if tick() - lr >= MOV_REFRESH then startMoveLeft(); lr = tick() end
-                hFire(ix, rowY)
+                hFire(ix, rowY)  -- harvest current row
+                -- Also harvest the row below (same as RotFarm v3.1 left sweep)
+                if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
                 task.wait(0.01)
             end
             stopAll(); if not guardFn() then return false end
@@ -1321,20 +1337,53 @@ local function RunDrop(guardFn)
         SetStatus("DROP: No drop item set!", Color3.fromRGB(255, 80, 80))
         return false
     end
+
+    -- Wait for remotes if not loaded yet (storage world may be slow)
     if not playerDropR or not uiPromptR then
-        SetStatus("DROP: Drop remotes not found!", Color3.fromRGB(255, 80, 80))
-        return false
+        SetStatus("DROP: Waiting for drop remotes...", Color3.fromRGB(220, 180, 80))
+        local t = tick()
+        while tick() - t < 15 do
+            if not playerDropR then
+                pcall(function() playerDropR = Remotes:FindFirstChild("PlayerDrop") end)
+            end
+            if not uiPromptR then
+                pcall(function()
+                    local mgr = RS:FindFirstChild("Managers")
+                    if mgr then
+                        local uim = mgr:FindFirstChild("UIManager")
+                        if uim then uiPromptR = uim:FindFirstChild("UIPromptEvent") end
+                    end
+                    if not uiPromptR then
+                        for _, v in pairs(RS:GetDescendants()) do
+                            if v.Name == "UIPromptEvent" then uiPromptR = v; break end
+                        end
+                    end
+                end)
+            end
+            if playerDropR and uiPromptR then break end
+            task.wait(0.5)
+        end
+    end
+
+    if not playerDropR or not uiPromptR then
+        SetStatus("DROP: Drop remotes not found — skipping drop", Color3.fromRGB(255, 80, 80))
+        warn("[MFRot] playerDropR=" .. tostring(playerDropR) .. " uiPromptR=" .. tostring(uiPromptR))
+        return guardFn()  -- continue even if drop fails
     end
 
     local total = GetTotalByCode(CFG.dropItem)
     if total <= 0 then
-        SetStatus("DROP: Inventory already empty", Color3.fromRGB(150, 255, 180))
+        SetStatus("DROP: Nothing to drop ✓", Color3.fromRGB(150, 255, 180))
         return guardFn()
     end
 
-    SetStatus("DROP: Dropping " .. total .. "x drop item...", Color3.fromRGB(220, 180, 80))
+    SetStatus("DROP: " .. total .. " to drop...", Color3.fromRGB(220, 180, 80))
 
+    local loopGuard = 0
     while guardFn() do
+        loopGuard += 1
+        if loopGuard > 50 then break end  -- safety cap
+
         local remaining = GetTotalByCode(CFG.dropItem)
         if remaining <= 0 then
             SetStatus("DROP: All dropped ✓", Color3.fromRGB(150, 255, 180))
@@ -1343,20 +1392,17 @@ local function RunDrop(guardFn)
 
         local slotN = FindSlotByCode(CFG.dropItem)
         if not slotN then
-            -- Item not found in any slot — already gone
             SetStatus("DROP: Cleared ✓", Color3.fromRGB(150, 255, 180))
             break
         end
 
         local dropAmt = math.min(remaining, MAX_DROP)
-        SetStatus("DROP: " .. remaining .. " left → dropping " .. dropAmt,
+        SetStatus("DROP: " .. remaining .. " left, dropping " .. dropAmt .. "...",
             Color3.fromRGB(220, 200, 100))
 
-        -- Fire the drop open event
+        -- Exact pattern from 1-Line Auto Farm v1.3
         pcall(function() playerDropR:FireServer(slotN) end)
         task.wait(0.3)
-
-        -- Confirm the drop amount via UIPromptEvent
         pcall(function()
             uiPromptR:FireServer({
                 ButtonAction = "drp",
@@ -1364,18 +1410,16 @@ local function RunDrop(guardFn)
             })
         end)
 
-        -- Wait for inventory to reflect the drop
         task.wait(DROP_COOLDOWN)
         if not guardFn() then return false end
     end
 
-    -- Final confirmation: verify inventory is 0
     local leftover = GetTotalByCode(CFG.dropItem)
     if leftover > 0 then
-        SetStatus("DROP: " .. leftover .. " remain — retrying...", Color3.fromRGB(255, 180, 80))
-        -- Recursively try once more (handles partial drops)
-        task.wait(0.5)
-        return RunDrop(guardFn)
+        SetStatus("DROP: " .. leftover .. " remain — retrying once...",
+            Color3.fromRGB(255, 180, 80))
+        task.wait(1)
+        if guardFn() then return RunDrop(guardFn) end
     end
 
     return guardFn()
@@ -1530,7 +1574,7 @@ local function RunCycle()
             else
                 SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                     Color3.fromRGB(180, 180, 255))
-                SaveProgress(true)  -- autoResume: farm is switching worlds
+                SaveProgress(true, true)  -- SYNC: must complete before server exit
                 joinWorld(farmWorld)
                 if not waitForWorldLoad(90) then
                     SetStatus("⚠ Load timeout: " .. farmWorld .. " — retrying",
@@ -1589,7 +1633,7 @@ local function RunCycle()
                 end
 
                 -- ── JOIN STORAGE WORLD ────────────────────────────
-                currentPhase = "going_storage"; SaveProgress(true)
+                currentPhase = "going_storage"; SaveProgress(true, true)  -- SYNC
                 local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
                 if alreadyAtStorage then
                     _G._MFRot_JoinedWorld = nil
@@ -1609,7 +1653,7 @@ local function RunCycle()
                 if not guard() then break end
 
                 -- ── DROP ALL ──────────────────────────────────────
-                currentPhase = "dropping"; SaveProgress(true)
+                currentPhase = "dropping"; SaveProgress(true, true)  -- SYNC: before possible switch
                 SetStatus("STORAGE — DROP", Color3.fromRGB(255, 180, 60))
                 RunDrop(guard)
                 if not guard() then break end
