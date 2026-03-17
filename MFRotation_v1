@@ -1,78 +1,27 @@
---[[
-    MFRotation_Start.lua — run this once to show the GUI.
-    AutoWorldSwitch.lua in Autoexecute handles everything else.
-]]
+-- MFRotation_Start.lua
+-- Shows the farm GUI. AutoWorldSwitch.lua (Autoexecute) must have run first.
 
-local Players = game:GetService("Players")
-local player  = Players.LocalPlayer
-local gui     = player:WaitForChild("PlayerGui")
+local gui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+local mfGui = gui:FindFirstChild("MFRotGui")
 
-local function showGui()
-    local mfGui = gui:FindFirstChild("MFRotGui")
-    if not mfGui then return false end
+if mfGui then
+    -- GUI exists — un-minimize and show it
     local main = mfGui:FindFirstChild("Main")
-    if not main then return false end
-    main.Visible = true
-    for _, c in pairs(main:GetDescendants()) do
-        if c:IsA("TextButton") and c.Text == "+" then
-            c.Text = "−"
-            main.Size = UDim2.new(0, 360, 0, 396)
-            local sf = main:FindFirstChildOfClass("ScrollingFrame")
-            if sf then sf.Visible = true end
-            break
+    if main then
+        main.Visible = true
+        for _, c in pairs(main:GetDescendants()) do
+            if c:IsA("TextButton") and c.Text == "+" then
+                c.Text = "−"
+                main.Size = UDim2.new(0, 360, 0, 396)
+                local sf = main:FindFirstChildOfClass("ScrollingFrame")
+                if sf then sf.Visible = true end
+                break
+            end
         end
     end
-    print("[MFRot] GUI ready.")
-    return true
+    print("[MFRot] GUI shown.")
+else
+    -- Still in lobby — autoexec returned early without building GUI.
+    -- The GUI will be built automatically once you enter a world.
+    print("[MFRot] Still in lobby — GUI will appear once you enter a world.")
 end
-
--- If GUI already exists, show it immediately
-if showGui() then return end
-
--- GUI not built yet — autoexec may still be joining a world.
--- Wait up to 60 seconds for it to appear.
-print("[MFRot] Waiting for GUI to load...")
-local deadline = tick() + 60
-while tick() < deadline do
-    task.wait(0.5)
-    if showGui() then return end
-end
-
--- If we get here, autoexec never built the GUI.
--- This means we are still in the lobby (no world loaded yet).
--- Show a helpful notice instead of an error.
-local old = gui:FindFirstChild("MFRot_StartNotice")
-if old then old:Destroy() end
-
-local sg = Instance.new("ScreenGui", gui)
-sg.Name = "MFRot_StartNotice"
-sg.ResetOnSpawn = false
-sg.IgnoreGuiInset = true
-sg.DisplayOrder = 9999
-
-local bg = Instance.new("Frame", sg)
-bg.Size = UDim2.new(0, 340, 0, 80)
-bg.Position = UDim2.new(0.5, -170, 0.5, -40)
-bg.BackgroundColor3 = Color3.fromRGB(16, 22, 18)
-bg.BorderSizePixel = 0
-Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
-local st = Instance.new("UIStroke", bg)
-st.Color = Color3.fromRGB(55, 140, 70); st.Thickness = 1.5
-
-local l1 = Instance.new("TextLabel", bg)
-l1.Size = UDim2.new(1,-16,0,22); l1.Position = UDim2.new(0,8,0,8)
-l1.BackgroundTransparency = 1; l1.Text = "Multi Farm Rotation v1.0"
-l1.TextColor3 = Color3.fromRGB(100,165,115); l1.TextSize = 11
-l1.Font = Enum.Font.GothamBold; l1.TextXAlignment = Enum.TextXAlignment.Left
-
-local l2 = Instance.new("TextLabel", bg)
-l2.Size = UDim2.new(1,-16,0,40); l2.Position = UDim2.new(0,8,0,32)
-l2.BackgroundTransparency = 1
-l2.Text = "Still in lobby — join a world first, then run this script again.\nAutoWorldSwitch.lua will build the GUI automatically."
-l2.TextColor3 = Color3.fromRGB(180,220,190); l2.TextSize = 9
-l2.Font = Enum.Font.Gotham; l2.TextXAlignment = Enum.TextXAlignment.Left
-l2.TextWrapped = true
-
-task.delay(8, function()
-    if sg and sg.Parent then sg:Destroy() end
-end)
