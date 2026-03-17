@@ -1559,71 +1559,98 @@ local function RunCycle()
         for wi = loopStart, numWorlds do
             if not guard() then break end
             currentWorldIdx = wi
-            local farmWorld = worldList[wi]
+            local farmWorld  = worldList[wi]
 
-            -- ── Determine resume phase for this world ────────────
-            -- On the very first cycle we respect the saved phase;
-            -- after that always start from harvesting.
-            local skipHarvest = (cycleCount == 1) and
-                (currentPhase == "breaking" or currentPhase == "planting"
-                 or currentPhase == "going_storage" or currentPhase == "dropping")
-            local skipBreak = (cycleCount == 1) and
-                (currentPhase == "planting"
-                 or currentPhase == "going_storage" or currentPhase == "dropping")
-            local skipPlant = (cycleCount == 1) and
+            -- ── On first cycle, determine which phases to skip based on
+            --    saved currentPhase (resume from mid-farm).
+            --    After cycle 1 always do all phases fresh.
+            local resumeAtStorage = (cycleCount == 1) and
                 (currentPhase == "going_storage" or currentPhase == "dropping")
+            local skipHarvest = (cycleCount == 1) and
+                (currentPhase == "breaking" or currentPhase == "planting" or resumeAtStorage)
+            local skipBreak   = (cycleCount == 1) and
+                (currentPhase == "planting" or resumeAtStorage)
+            local skipPlant   = (cycleCount == 1) and resumeAtStorage
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
             local resumePlantY   = (cycleCount == 1 and skipBreak and not skipPlant) and currentRowY or nil
 
-            -- Clear resume flags after the first world in cycle 1
+            -- After the first world in cycle 1, clear all resume flags
             if cycleCount == 1 and wi > loopStart then
-                skipHarvest = false; skipBreak = false; skipPlant = false
-                resumeHarvestY = nil; resumePlantY = nil
+                skipHarvest    = false; skipBreak = false; skipPlant = false
+                resumeAtStorage = false
+                resumeHarvestY = nil;   resumePlantY = nil
             end
 
-            -- skipThisWorld is set to true when load fails — skips
-            -- harvest/break/plant/storage for this world and moves on.
+            -- ── STORAGE-RESUME SHORTCUT ──────────────────────────
+            -- If we saved in going_storage/dropping phase, skip joining
+            -- the farm world and go straight to drop, then advance to next world.
+            local didStorageResume = false
+            if resumeAtStorage then
+                local alreadyAtStorage2 = (_G._MFRot_JoinedWorld == storageWorld)
+                if alreadyAtStorage2 then
+                    _G._MFRot_JoinedWorld = nil
+                    SetStatus("STORAGE (resume, already here) — DROP",
+                        Color3.fromRGB(150, 255, 180))
+                    stopWatching(); worldWatching = false
+                    fullScan(); startWatching(); worldWatching = true
+                else
+                    SetStatus("RESUME → STORAGE " .. storageWorld,
+                        Color3.fromRGB(255, 220, 120))
+                    joinWorld(storageWorld)
+                    if not waitForWorldLoad(90) then
+                        joinWorld(storageWorld); waitForWorldLoad(60)
+                    end
+                end
+                if guard() then
+                    local nextWi = wi + 1
+                    currentWorldIdx = nextWi > numWorlds and 1 or nextWi
+                    currentRowY  = FARM_TOP_Y
+                    currentPhase = "dropping"
+                    SaveProgress(true, true)
+                    SetStatus("STORAGE (resume) — DROP", Color3.fromRGB(255, 180, 60))
+                    RunDrop(guard)
+                    currentPhase = "harvesting"
+                end
+                didStorageResume = true
+            end
+
+            -- skipThisWorld = true when world load fails
             local skipThisWorld = false
 
-            -- ── JOIN FARM WORLD ───────────────────────────────────
-            -- If _G._MFRot_JoinedWorld matches this world we just
-            -- arrived here via the autoexec lobby join — skip the
-            -- joinWorld() call since we're already inside it.
+            if not didStorageResume then
+            -- ── JOIN FARM WORLD ─────────────────────────────────
             local alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
             if alreadyHere then
-                -- Clear the flag so subsequent worlds join normally
                 _G._MFRot_JoinedWorld = nil
                 SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
                     .. " (already here)", Color3.fromRGB(150, 255, 180))
                 SaveProgress(true)
-                -- Reset tile watcher for this world
                 stopWatching(); worldWatching = false
                 fullScan(); startWatching(); worldWatching = true
             else
-                SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
+                SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                     Color3.fromRGB(180, 180, 255))
-                -- Save with harvesting phase so resume knows to start from harvest
-                currentPhase = "harvesting"
-                SaveProgress(true, true)  -- SYNC: must complete before server exit
+                -- FIX: save nextWorldIdx BEFORE exiting so resume
+                -- starts at this world (not wi+1) and re-harvests it
+                currentPhase    = "harvesting"
+                currentRowY     = FARM_TOP_Y
+                currentWorldIdx = wi
+                SaveProgress(true, true)  -- SYNC before server exit
                 joinWorld(farmWorld)
                 if not waitForWorldLoad(90) then
-                    SetStatus("⚠ Load timeout: " .. farmWorld .. " — retrying",
+                    SetStatus("⚠ Timeout: " .. farmWorld .. " — retry",
                         Color3.fromRGB(255, 80, 80))
                     joinWorld(farmWorld)
                     if not waitForWorldLoad(60) then
-                        SetStatus("⚠ Failed to load " .. farmWorld .. " — skipping",
+                        SetStatus("⚠ Failed: " .. farmWorld .. " — skipping",
                             Color3.fromRGB(255, 80, 80))
-                        task.wait(3)
-                        skipThisWorld = true
+                        task.wait(3); skipThisWorld = true
                     end
                 end
             end
 
             if not skipThisWorld then
                 if not guard() then break end
-
-                -- Reset tile watcher only if we didn't already do it
-                -- in the alreadyHere branch above
                 if not alreadyHere then
                     stopWatching(); worldWatching = false
                     fullScan(); startWatching(); worldWatching = true
@@ -1632,38 +1659,54 @@ local function RunCycle()
                 -- ── HARVEST ───────────────────────────────────────
                 if not skipHarvest then
                     currentPhase = "harvesting"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. " — HARVEST", Color3.fromRGB(255, 200, 80))
+                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — HARVEST",
+                        Color3.fromRGB(255, 200, 80))
                     local ok = RunHarvest(guard, resumeHarvestY)
                     if not ok or not guard() then break end
+                    -- FIX: reset after harvest so next load starts from top
+                    currentRowY = FARM_TOP_Y
                 else
-                    SetStatus("RESUME: skipping harvest", Color3.fromRGB(180, 200, 255))
+                    SetStatus("RESUME: skip harvest", Color3.fromRGB(180, 200, 255))
                     task.wait(0.3)
                 end
 
                 -- ── BREAK ─────────────────────────────────────────
                 if not skipBreak then
                     currentPhase = "breaking"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. " — BREAK", Color3.fromRGB(220, 150, 50))
+                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
+                        Color3.fromRGB(220, 150, 50))
                     local ok = RunBreak(guard)
                     if not ok or not guard() then break end
                 else
-                    SetStatus("RESUME: skipping break", Color3.fromRGB(180, 200, 255))
+                    SetStatus("RESUME: skip break", Color3.fromRGB(180, 200, 255))
                     task.wait(0.3)
                 end
 
                 -- ── PLANT ─────────────────────────────────────────
                 if not skipPlant then
                     currentPhase = "planting"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. " — PLANT", Color3.fromRGB(85, 215, 110))
+                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — PLANT",
+                        Color3.fromRGB(85, 215, 110))
                     local ok = RunPlant(guard, resumePlantY)
                     if not ok or not guard() then break end
                 else
-                    SetStatus("RESUME: skipping plant", Color3.fromRGB(180, 200, 255))
+                    SetStatus("RESUME: skip plant", Color3.fromRGB(180, 200, 255))
                     task.wait(0.3)
                 end
 
                 -- ── JOIN STORAGE WORLD ────────────────────────────
-                currentPhase = "going_storage"; SaveProgress(true, true)  -- SYNC
+                -- FIX: advance world index BEFORE saving so on resume
+                -- we know to start at wi+1 after the drop
+                local nextWi2 = wi + 1
+                if nextWi2 > numWorlds then
+                    currentWorldIdx = 1
+                else
+                    currentWorldIdx = nextWi2
+                end
+                currentRowY  = FARM_TOP_Y
+                currentPhase = "going_storage"
+                SaveProgress(true, true)  -- SYNC before server exit
+
                 local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
                 if alreadyAtStorage then
                     _G._MFRot_JoinedWorld = nil
@@ -1675,23 +1718,26 @@ local function RunCycle()
                     SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
                     joinWorld(storageWorld)
                     if not waitForWorldLoad(90) then
-                        SetStatus("⚠ Storage world load timeout!", Color3.fromRGB(255, 80, 80))
-                        joinWorld(storageWorld)
-                        waitForWorldLoad(60)
+                        SetStatus("⚠ Storage timeout!", Color3.fromRGB(255, 80, 80))
+                        joinWorld(storageWorld); waitForWorldLoad(60)
                     end
                 end
                 if not guard() then break end
 
                 -- ── DROP ALL ──────────────────────────────────────
-                currentPhase = "dropping"; SaveProgress(true, true)  -- SYNC: before possible switch
-                SetStatus("STORAGE — DROP", Color3.fromRGB(255, 180, 60))
+                currentPhase = "dropping"; SaveProgress(true, true)
+                SetStatus("STORAGE — DROP [world " .. wi .. "/" .. numWorlds .. "]",
+                    Color3.fromRGB(255, 180, 60))
                 RunDrop(guard)
                 if not guard() then break end
-            end -- skipThisWorld check
-        end -- world loop
+            end -- skipThisWorld
+            end -- not didStorageResume
+        end -- world for loop
 
-        -- After a full pass reset currentRowY for the next cycle
-        currentRowY = FARM_TOP_Y
+        -- Full pass done — reset for next cycle
+        currentWorldIdx = 1
+        currentRowY     = FARM_TOP_Y
+        currentPhase    = "harvesting"
         SetStatus("CYCLE #" .. cycleCount .. " complete — restarting",
             Color3.fromRGB(150, 255, 180))
         task.wait(1)
