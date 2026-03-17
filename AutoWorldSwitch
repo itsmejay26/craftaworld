@@ -1586,6 +1586,9 @@ local function RunCycle()
             -- the farm world and go straight to drop, then advance to next world.
             local didStorageResume = false
             if resumeAtStorage then
+                -- We saved with currentWorldIdx=wi and phase="going_storage".
+                -- Just do the storage drop here. The for loop will naturally
+                -- advance to wi+1 on the next iteration to farm the next world.
                 local alreadyAtStorage2 = (_G._MFRot_JoinedWorld == storageWorld)
                 if alreadyAtStorage2 then
                     _G._MFRot_JoinedWorld = nil
@@ -1602,16 +1605,18 @@ local function RunCycle()
                     end
                 end
                 if guard() then
-                    local nextWi = wi + 1
-                    currentWorldIdx = nextWi > numWorlds and 1 or nextWi
-                    currentRowY  = FARM_TOP_Y
                     currentPhase = "dropping"
                     SaveProgress(true, true)
                     SetStatus("STORAGE (resume) — DROP", Color3.fromRGB(255, 180, 60))
                     RunDrop(guard)
+                    -- Reset so subsequent worlds start fresh
+                    currentRowY  = FARM_TOP_Y
                     currentPhase = "harvesting"
                 end
                 didStorageResume = true
+                -- After drop, clear resumeAtStorage so subsequent worlds
+                -- in this same for loop run their full harvest/break/plant
+                resumeAtStorage = false
             end
 
             -- skipThisWorld = true when world load fails
@@ -1695,16 +1700,12 @@ local function RunCycle()
                 end
 
                 -- ── JOIN STORAGE WORLD ────────────────────────────
-                -- FIX: advance world index BEFORE saving so on resume
-                -- we know to start at wi+1 after the drop
-                local nextWi2 = wi + 1
-                if nextWi2 > numWorlds then
-                    currentWorldIdx = 1
-                else
-                    currentWorldIdx = nextWi2
-                end
-                currentRowY  = FARM_TOP_Y
-                currentPhase = "going_storage"
+                -- Save currentWorldIdx = wi (NOT wi+1) so on resume
+                -- loopStart = wi and the loop re-enters at wi with
+                -- resumeAtStorage=true, drops, then continues to wi+1 naturally.
+                currentWorldIdx = wi
+                currentRowY     = FARM_TOP_Y
+                currentPhase    = "going_storage"
                 SaveProgress(true, true)  -- SYNC before server exit
 
                 local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
