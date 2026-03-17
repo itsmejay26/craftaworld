@@ -1,15 +1,8 @@
 --[[
-    MULTI FARM ROTATION v1.0  ·  AUTO-EXECUTE SCRIPT
-    ═══════════════════════════════════════════════════════════════
+    MULTI FARM ROTATION v1.0
     PUT THIS FILE IN YOUR AUTOEXECUTE FOLDER.
-    Replace your old AutoJoin / AutoWorldSwitch script with this.
-
-    Then execute MFRotation_Start.lua ONCE to show the GUI.
-    After that, everything is fully automatic:
-      • Full GUI appears on every server load
-      • Minimized + auto-resumes when farm is running
-      • Handles all world switching by itself
-    ═══════════════════════════════════════════════════════════════
+    It runs automatically on every server load.
+    Execute MFRotation_Start.lua once to show the GUI and set up.
 ]]
 
 -- ════════════════════════════════════════════════════════════════
@@ -24,58 +17,9 @@ end
 local inst = { dead = false, connections = {} }
 _G.MFRotInst = inst
 
--- ── Early autoResume guard ────────────────────────────────────────
--- If this script was NOT loaded by the autoexec after a real server
--- switch (_G._MFRot_ServerSwitch is nil), clear any stale autoResume
--- flag synchronously NOW, before the auto-start block can read it.
--- This means: manual runs ALWAYS show full GUI and wait for START.
-if not _G._MFRot_ServerSwitch then
-    pcall(function()
-        local HttpSvc2 = game:GetService("HttpService")
-        local SAVE_FILE2 = "MFRot_SaveData.json"
-        if isfile and isfile(SAVE_FILE2) then
-            local ok, raw = pcall(readfile, SAVE_FILE2)
-            if ok and raw then
-                local ok2, data = pcall(function() return HttpSvc2:JSONDecode(raw) end)
-                if ok2 and type(data) == "table" then
-                    local pname = game:GetService("Players").LocalPlayer.Name
-                    if data[pname] then
-                        data[pname].autoResume = false
-                        pcall(function() writefile(SAVE_FILE2, HttpSvc2:JSONEncode(data)) end)
-                    end
-                end
-            end
-        end
-    end)
-end
 
--- ════════════════════════════════════════════════════════════════
---  TELEPORT PERSISTENCE
---  Saves itself to workspace so queue_on_teleport can reload it
---  as a fallback if autoexec doesn't fire for any reason.
--- ════════════════════════════════════════════════════════════════
-do
-    local FILE   = "MFRotFarm.lua"
-    local RELOAD = "if isfile and isfile('" .. FILE .. "') then loadstring(readfile('" .. FILE .. "'))() end"
 
-    local src
-    if get_script_source then pcall(function() src = get_script_source() end) end
-    if (not src or src == "") and syn and syn.get_script_source then
-        pcall(function() src = syn.get_script_source() end)
-    end
-    if (not src or src == "") and getfenv then
-        pcall(function()
-            local env = getfenv(0)
-            if env and env.script and env.script.Source then src = env.script.Source end
-        end)
-    end
-    if src and src ~= "" and writefile then
-        pcall(function() writefile(FILE, src) end)
-    end
-
-    local qot = queue_on_teleport or (syn and syn.queue_on_teleport)
-    if qot then pcall(qot, RELOAD) end
-end
+-- (Autoexec — no self-save or queue_on_teleport needed)
 
 -- ════════════════════════════════════════════════════════════════
 --  SERVICES
@@ -2399,14 +2343,6 @@ table.insert(inst.connections, player.CharacterRemoving:Connect(function() stopA
 -- ════════════════════════════════════════════════════════════════
 task.spawn(function()
     task.wait(0.5)  -- let GUI finish building
-
-    -- If loaded via MFRotation_Start.lua manually, never auto-start
-    if _G._MFRot_ManualStart then
-        _G._MFRot_ManualStart = nil
-        SetStatus("[ READY ] Configure and press START", Color3.fromRGB(150, 255, 180))
-        print("[MFRot] Manual start — press START when ready.")
-        return
-    end
 
     local all   = LoadAllSaves()
     local saved = all[currentPlayerName]
