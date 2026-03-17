@@ -1,0 +1,182 @@
+--[[
+    AutoWorldSwitch.lua
+    ═══════════════════════════════════════════════════════════════
+    Place this file inside your executor's Autoexecute folder.
+    It runs automatically on EVERY server load.
+
+    What it does:
+      1. Reads craftaworld/pending_world.txt
+      2. If a target world is found AND we are in the lobby:
+           → shows a tiny "Joining [worldname]..." overlay
+           → fires tp:FireServer(worldName)
+           → clears the file
+      3. If a target world is found but NOT in lobby:
+           → saves the target back (so it persists)
+           → exits to lobby (main script or next load will re-read)
+      4. If no pending world: idles silently
+      5. After joining, loads MFRotation_v1.lua if it exists
+         so the full farm script resumes in the new world.
+
+    The main script (MFRotation_v1.lua) handles writing the target
+    and calling RequestPlayerExitWorld when it needs to switch worlds.
+    ═══════════════════════════════════════════════════════════════
+]]
+
+local DATA_FOLDER = "craftaworld"
+local DATA_FILE   = "craftaworld/pending_world.txt"
+local MAIN_FILE   = "MFRotation_v1.lua"
+
+local RS      = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local player  = Players.LocalPlayer
+local gui     = player:WaitForChild("PlayerGui")
+
+-- ── Lobby detection ──────────────────────────────────────────────
+local function isInLobby()
+    return RS:FindFirstChild("tp") ~= nil
+end
+
+-- ── Minimal lobby GUI ────────────────────────────────────────────
+local function showLobbyGui(message)
+    -- Remove any existing lobby notice
+    local old = gui:FindFirstChild("MFRot_LobbyGui")
+    if old then old:Destroy() end
+
+    local sg = Instance.new("ScreenGui", gui)
+    sg.Name           = "MFRot_LobbyGui"
+    sg.ResetOnSpawn   = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder   = 9999
+
+    local bg = Instance.new("Frame", sg)
+    bg.Size             = UDim2.new(0, 280, 0, 54)
+    bg.Position         = UDim2.new(0.5, -140, 0, 14)
+    bg.BackgroundColor3 = Color3.fromRGB(16, 22, 18)
+    bg.BorderSizePixel  = 0
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
+    local stroke = Instance.new("UIStroke", bg)
+    stroke.Color = Color3.fromRGB(55, 140, 70); stroke.Thickness = 1.5
+
+    local icon = Instance.new("TextLabel", bg)
+    icon.Size = UDim2.new(0, 32, 1, 0); icon.Position = UDim2.new(0, 10, 0, 0)
+    icon.BackgroundTransparency = 1; icon.Text = "🌐"
+    icon.TextSize = 20; icon.Font = Enum.Font.GothamBold
+    icon.TextXAlignment = Enum.TextXAlignment.Center
+
+    local lbl = Instance.new("TextLabel", bg)
+    lbl.Size = UDim2.new(1, -52, 1, 0); lbl.Position = UDim2.new(0, 46, 0, 0)
+    lbl.BackgroundTransparency = 1; lbl.Text = message
+    lbl.TextColor3 = Color3.fromRGB(180, 255, 195)
+    lbl.TextSize = 11; lbl.Font = Enum.Font.GothamBold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextWrapped = true
+
+    return sg, lbl
+end
+
+local function removeLobbyGui()
+    local old = gui:FindFirstChild("MFRot_LobbyGui")
+    if old then old:Destroy() end
+end
+
+-- ── Main logic ───────────────────────────────────────────────────
+task.spawn(function()
+    -- Wait for game to fully initialize
+    task.wait(3)
+
+    -- Read pending world
+    local ok, content = pcall(readfile, DATA_FILE)
+    if not (ok and content and content ~= "") then
+        -- No pending world — nothing to do
+        return
+    end
+
+    local target = content:match("^%s*(.-)%s*$")
+    if not target or target == "" then return end
+
+    print("[AutoWorldSwitch] Pending world: " .. target)
+
+    if isInLobby() then
+        -- ── In lobby: join directly ───────────────────────────────
+        local sg, lbl = showLobbyGui("Joining  " .. target .. "...")
+
+        -- Small dot animation while joining
+        local dots = 0
+        local anim = task.spawn(function()
+            while sg and sg.Parent do
+                dots = (dots % 3) + 1
+                lbl.Text = "Joining  " .. target .. string.rep(".", dots)
+                task.wait(0.5)
+            end
+        end)
+
+        -- Clear the file before firing so it doesn't re-trigger
+        pcall(function() writefile(DATA_FILE, "") end)
+
+        task.wait(1)  -- slight delay so lobby UI settles
+
+        -- Fire the join
+        local tp = RS:FindFirstChild("tp")
+        if tp then
+            pcall(function() tp:FireServer(target) end)
+        else
+            -- tp remote not found; retry once
+            task.wait(1)
+            tp = RS:FindFirstChild("tp")
+            if tp then pcall(function() tp:FireServer(target) end) end
+        end
+
+        -- Wait until we're out of lobby (world is loading)
+        local deadline = tick() + 30
+        while isInLobby() and tick() < deadline do
+            task.wait(0.3)
+        end
+
+        -- Wait for Tiles to appear (confirms we're inside a world)
+        local tDeadline = tick() + 45
+        while tick() < tDeadline do
+            local tf = workspace:FindFirstChild("Tiles")
+            if tf and #tf:GetChildren() > 0 then break end
+            task.wait(0.5)
+        end
+
+        -- Small extra settle
+        task.wait(1)
+        removeLobbyGui()
+
+        -- Load main farm script so it resumes in the new world
+        if isfile and isfile(MAIN_FILE) then
+            local src = pcall(function() return readfile(MAIN_FILE) end)
+            -- Use loadstring; errors are silently swallowed
+            local ok2, fn = pcall(loadstring, readfile(MAIN_FILE))
+            if ok2 and fn then
+                local ok3 = pcall(fn)
+                if not ok3 then
+                    warn("[AutoWorldSwitch] Main script error on load.")
+                end
+            end
+        else
+            warn("[AutoWorldSwitch] " .. MAIN_FILE .. " not found — re-execute manually.")
+        end
+
+    else
+        -- ── In a world: save target and exit to lobby ─────────────
+        print("[AutoWorldSwitch] In world — exiting to lobby to join: " .. target)
+        local sg, lbl = showLobbyGui("Exiting to lobby...")
+
+        -- Keep target saved (auto-execute will read it on next load)
+        pcall(function() writefile(DATA_FILE, target) end)
+
+        task.wait(0.5)
+
+        local exitR = RS:FindFirstChild("Remotes")
+        if exitR then exitR = exitR:FindFirstChild("RequestPlayerExitWorld") end
+        if exitR then
+            pcall(function() exitR:InvokeServer() end)
+        end
+
+        -- GUI will disappear naturally on server switch
+    end
+end)
+
+print("[AutoWorldSwitch] Loaded. Checking for pending world...")
