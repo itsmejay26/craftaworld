@@ -48,8 +48,9 @@ do
                  .. "else warn('[MFRot] AutoWorldSwitch.lua missing.') end")
                  :format(FILE, FILE)
 
-    -- Save to workspace root once so MFRotation_Start.lua can find it
-    if not _G._MFRotSaved then
+    -- Get own source and store in global + save to workspace
+    -- _G._MFRotSource is used by MFRotation_Start.lua as fallback
+    do
         local src
         if get_script_source then
             pcall(function() src = get_script_source() end)
@@ -65,13 +66,16 @@ do
                 end
             end)
         end
-        if src and src ~= "" and writefile then
-            pcall(function() writefile(FILE, src) end)
-            if isfile and isfile(FILE) then
-                _G._MFRotSaved = true
-                print("[MFRot] Saved as AutoWorldSwitch.lua")
-            else
-                warn("[MFRot] Could not save script to workspace.")
+        if src and src ~= "" then
+            -- Always store in global so start script can use it this session
+            _G._MFRotSource = src
+            -- Save to workspace root if not already done
+            if not _G._MFRotSaved and writefile then
+                pcall(function() writefile(FILE, src) end)
+                if isfile and isfile(FILE) then
+                    _G._MFRotSaved = true
+                    print("[MFRot] Saved as AutoWorldSwitch.lua")
+                end
             end
         end
     end
@@ -2361,27 +2365,40 @@ end))
 table.insert(inst.connections, player.CharacterRemoving:Connect(function() stopAll() end))
 
 -- ════════════════════════════════════════════════════════════════
---  AUTO-START  (triggered when loaded by AutoWorldSwitch.lua)
---  If the last save has autoResume=true, restore state and call
---  RunCycle() automatically without user pressing START.
+--  AUTO-START
+--  On every server load this block runs after the GUI is built.
+--  If autoResume=true is in the save (set before every world switch)
+--  it restores all state, minimizes the GUI, and calls RunCycle()
+--  automatically — the farm continues with no user interaction.
+--  If autoResume is false/absent the GUI opens normally, full size.
 -- ════════════════════════════════════════════════════════════════
 task.spawn(function()
     task.wait(0.5)  -- let GUI finish building
 
-    local all = LoadAllSaves()
+    local all   = LoadAllSaves()
     local saved = all[currentPlayerName]
+
     if not (saved and saved.autoResume == true) then
-        print("[MFRot v1.0] No autoResume flag — waiting for user to press START.")
+        -- Normal load — GUI is already showing full size, user presses START
+        print("[MFRot v1.0] Ready — press START to begin.")
         return
     end
 
-    print("[MFRot v1.0] autoResume detected — restoring and starting farm...")
-    SetStatus("Auto-resuming farm...", Color3.fromRGB(180, 220, 255))
+    -- ── Auto-resume path ─────────────────────────────────────────
+    print("[MFRot v1.0] autoResume detected — restoring state...")
 
-    -- Apply saved state into live variables
+    -- Minimize the GUI so it stays out of the way while farming
+    isMinimized = true
+    if main then
+        main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_MIN)
+    end
+    if scroll then scroll.Visible = false end
+    if minBtn then minBtn.Text = "+" end
+
+    -- Apply saved state into all live variables
     ApplyPlayerSave(currentPlayerName)
 
-    -- Sync GUI labels
+    -- Sync GUI labels (visible when user expands)
     if plantItemLbl then
         plantItemLbl.Text = CFG.plantItem
             and ("Plant: " .. CFG.plantItem .. "  x" .. GetTotalByCode(CFG.plantItem))
@@ -2404,15 +2421,28 @@ task.spawn(function()
 
     -- Validate before starting
     if not CFG.plantItem or not CFG.breakItem or not CFG.dropItem then
+        -- Expand GUI so user sees the problem
+        isMinimized = false
+        if main then main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_FULL) end
+        if scroll then scroll.Visible = true end
+        if minBtn then minBtn.Text = "-" end
         SetStatus("Auto-resume: items missing — press START manually",
             Color3.fromRGB(255, 180, 80))
         ClearAutoResume(); return
     end
     if #worldList == 0 or storageWorld == "" then
+        isMinimized = false
+        if main then main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_FULL) end
+        if scroll then scroll.Visible = true end
+        if minBtn then minBtn.Text = "-" end
         SetStatus("Auto-resume: worlds missing — press START manually",
             Color3.fromRGB(255, 180, 80))
         ClearAutoResume(); return
     end
+
+    -- Show status in the minimized title bar
+    SetStatus("Resuming world " .. currentWorldIdx .. "/" .. #worldList .. "...",
+        Color3.fromRGB(180, 220, 255))
 
     -- Force resume mode so RunCycle picks up the saved world/phase
     resumeEnabled = true
