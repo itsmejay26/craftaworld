@@ -16,6 +16,11 @@ end
 local inst = { dead = false, connections = {} }
 _G.MFRotInst = inst
 
+-- Clear tester skip flags so they never persist from a previous session
+_G._MFRot_SkipHarvest = nil
+_G._MFRot_SkipBreak   = nil
+_G._MFRot_SkipPlant   = nil
+
 -- ════════════════════════════════════════════════════════════════
 --  SERVICES
 -- ════════════════════════════════════════════════════════════════
@@ -250,9 +255,15 @@ local startWorldIdx    = 1        -- which index to start from (default first)
 local growTime         = 75360    -- 20h 56m = 75360 seconds
 
 local CFG = {
-    plantItem = nil,   -- item code for seeds (from slot helper)
-    breakItem = nil,   -- item code for break blocks
-    dropItem  = nil,   -- item code for items to drop at storage
+    plantItem    = nil,   -- session integer code (from GetCode)
+    breakItem    = nil,
+    dropItem     = nil,
+    -- Raw slot fingerprints (image asset ID + colors) — stable across sessions
+    -- These are set immediately when the user presses APPLY and saved to file.
+    -- Never derived from inventory at save-time (avoids nil if item not in bag).
+    plantItemKey = nil,
+    breakItemKey = nil,
+    dropItemKey  = nil,
 }
 
 -- Resume
@@ -424,11 +435,15 @@ local function SaveProgress(autoResume, sync)
                 safeAutoStop     = safeAutoStop,
                 safeAutoLeave    = safeAutoLeave,
                 whitelist        = wlCopy,
-                plantItemKey     = ResolveItemKey(CFG.plantItem),
-                breakItemKey     = ResolveItemKey(CFG.breakItem),
-                dropItemKey      = ResolveItemKey(CFG.dropItem),
+                -- Use the stored raw keys — set when user pressed APPLY.
+                -- Never derived from inventory at save-time so they are
+                -- always correct even when the item bag is empty.
+                plantItemKey     = CFG.plantItemKey or ResolveItemKey(CFG.plantItem),
+                breakItemKey     = CFG.breakItemKey or ResolveItemKey(CFG.breakItem),
+                dropItemKey      = CFG.dropItemKey  or ResolveItemKey(CFG.dropItem),
                 timestamp        = os.time(),
                 autoResume       = autoResume == true,
+                userStopped      = _G._MFRot_UserStopped == true,
             }
             WriteAllSaves(all)
         end)
@@ -471,9 +486,22 @@ local function ApplyPlayerSave(username)
         for _, v in ipairs(d.whitelist) do table.insert(whitelist, v) end
         EnsureDefault(); SaveWL()
     end
-    if d.plantItemKey then CFG.plantItem = GetCode(d.plantItemKey) end
-    if d.breakItemKey then CFG.breakItem = GetCode(d.breakItemKey) end
-    if d.dropItemKey  then CFG.dropItem  = GetCode(d.dropItemKey)  end
+    -- Restore raw keys AND register them in scMap so FindSlotByCode works
+    if d.plantItemKey then
+        CFG.plantItemKey = d.plantItemKey
+        CFG.plantItem    = GetCode(d.plantItemKey)
+    end
+    if d.breakItemKey then
+        CFG.breakItemKey = d.breakItemKey
+        CFG.breakItem    = GetCode(d.breakItemKey)
+    end
+    if d.dropItemKey then
+        CFG.dropItemKey = d.dropItemKey
+        CFG.dropItem    = GetCode(d.dropItemKey)
+    end
+    if d.userStopped ~= nil then
+        _G._MFRot_UserStopped = d.userStopped
+    end
     return d
 end
 
@@ -1574,6 +1602,8 @@ local function RunCycle()
             else
                 SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                     Color3.fromRGB(180, 180, 255))
+                -- Save with harvesting phase so resume knows to start from harvest
+                currentPhase = "harvesting"
                 SaveProgress(true, true)  -- SYNC: must complete before server exit
                 joinWorld(farmWorld)
                 if not waitForWorldLoad(90) then
@@ -1675,7 +1705,8 @@ local function RunCycle()
     end
     stopAll()
     ClearAutoResume()  -- farm ended normally; don't auto-restart next load
-    SetStatus("STOPPED", Color3.fromRGB(255, 100, 100))
+    -- Don't set userStopped here — normal end should allow next auto-resume
+    SetStatus("[ STOPPED ] Cycle complete", Color3.fromRGB(255, 100, 100))
 end
 
 -- ════════════════════════════════════════════════════════════════
@@ -1942,19 +1973,22 @@ do
     Btn("APPLY PLANT", 0, 0.32, Color3.fromRGB(40, 120, 65), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
-        CFG.plantItem = GetCode(k)
+        CFG.plantItemKey = k          -- raw fingerprint — survives server restarts
+        CFG.plantItem    = GetCode(k) -- session code for FindSlotByCode
         SetStatus("Plant set: " .. CFG.plantItem, Color3.fromRGB(85, 210, 115))
     end)
     Btn("APPLY BREAK", 0.34, 0.32, Color3.fromRGB(160, 100, 30), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
-        CFG.breakItem = GetCode(k)
+        CFG.breakItemKey = k
+        CFG.breakItem    = GetCode(k)
         SetStatus("Break set: " .. CFG.breakItem, Color3.fromRGB(220, 180, 80))
     end)
     Btn("APPLY DROP", 0.68, 0.32, Color3.fromRGB(130, 70, 160), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
-        CFG.dropItem = GetCode(k)
+        CFG.dropItemKey = k
+        CFG.dropItem    = GetCode(k)
         SetStatus("Drop set: " .. CFG.dropItem, Color3.fromRGB(200, 130, 255))
     end)
     Y += 26
@@ -2280,26 +2314,42 @@ scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
 startBtn.MouseButton1Click:Connect(function()
     if isRunning then return end
 
+    -- Clear the user-stopped flag so auto-resume works again
+    -- after this manual START press
+    _G._MFRot_UserStopped = false
+    pcall(function()
+        local all = LoadAllSaves()
+        if all[currentPlayerName] then
+            all[currentPlayerName].userStopped = false
+            WriteAllSaves(all)
+        end
+    end)
+
     -- If resume is enabled, apply saved data NOW before validation
     -- so that CFG items and worldList are populated from the save
     if resumeEnabled then
         local targetName = resumeTarget or currentPlayerName
         local saved = ApplyPlayerSave(targetName)
         if saved then
-            -- Sync GUI to show restored values
+            -- Show the raw key fingerprint (image ID portion) so the user
+            -- can see WHICH item was restored, same as RotFarm v3.1
+            local function keyName(k)
+                if not k then return "NOT SET" end
+                return k:match("^(%d+)") or k:sub(1, 20)
+            end
             if plantItemLbl then
                 plantItemLbl.Text = CFG.plantItem
-                    and ("Plant: " .. CFG.plantItem .. "  x" .. GetTotalByCode(CFG.plantItem))
+                    and ("Plant: " .. keyName(CFG.plantItemKey) .. "  x" .. GetTotalByCode(CFG.plantItem))
                     or "Plant: NOT SET"
             end
             if breakItemLbl then
                 breakItemLbl.Text = CFG.breakItem
-                    and ("Break: " .. CFG.breakItem .. "  x" .. GetTotalByCode(CFG.breakItem))
+                    and ("Break: " .. keyName(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
                     or "Break: NOT SET"
             end
             if dropItemLbl then
                 dropItemLbl.Text = CFG.dropItem
-                    and ("Drop:  " .. CFG.dropItem .. "  x" .. GetTotalByCode(CFG.dropItem))
+                    and ("Drop:  " .. keyName(CFG.dropItemKey) .. "  x" .. GetTotalByCode(CFG.dropItem))
                     or "Drop:  NOT SET"
             end
             if storageInput and storageWorld ~= "" then
@@ -2355,8 +2405,18 @@ stopBtn.MouseButton1Click:Connect(function()
         pauseBtn.Text             = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
-    ClearAutoResume()  -- user manually stopped; don't auto-restart next load
-    SetStatus("STOPPED", Color3.fromRGB(255, 100, 100))
+    -- Mark as user-stopped — persists across server switches
+    -- so the farm does NOT auto-resume if the server changes
+    _G._MFRot_UserStopped = true
+    pcall(function()
+        local all = LoadAllSaves()
+        if all[currentPlayerName] then
+            all[currentPlayerName].autoResume  = false
+            all[currentPlayerName].userStopped = true
+            WriteAllSaves(all)
+        end
+    end)
+    SetStatus("[ STOPPED ] Press START to farm again", Color3.fromRGB(255, 100, 100))
 end)
 
 -- Minimize / Close
@@ -2491,6 +2551,15 @@ task.spawn(function()
     local cameFromSwitch = (_G._MFRot_ServerSwitch == true)
     _G._MFRot_ServerSwitch = nil  -- consume flag
 
+    -- If user manually pressed STOP, respect that — no auto-resume
+    -- even if the server switched (they want the farm fully stopped)
+    if saved and saved.userStopped == true then
+        _G._MFRot_UserStopped = true
+        SetStatus("[ STOPPED ] Press START to farm again", Color3.fromRGB(255, 140, 100))
+        print("[MFRot] User previously stopped — waiting for START.")
+        return
+    end
+
     if not (saved and saved.autoResume == true and cameFromSwitch) then
         -- Not a farm server-switch — show GUI, wait for user
         SetStatus("[ READY ] Configure and press START", Color3.fromRGB(150, 255, 180))
@@ -2515,20 +2584,21 @@ task.spawn(function()
     -- Apply saved state into all live variables
     ApplyPlayerSave(currentPlayerName)
 
-    -- Sync GUI labels (visible when user expands)
+    -- Sync GUI labels — show image asset ID from the raw fingerprint
+    local function _kn(k) return k and (k:match("^(%d+)") or k:sub(1,16)) or "?" end
     if plantItemLbl then
         plantItemLbl.Text = CFG.plantItem
-            and ("Plant: " .. CFG.plantItem .. "  x" .. GetTotalByCode(CFG.plantItem))
+            and ("Plant: " .. _kn(CFG.plantItemKey) .. "  x" .. GetTotalByCode(CFG.plantItem))
             or "Plant: NOT SET"
     end
     if breakItemLbl then
         breakItemLbl.Text = CFG.breakItem
-            and ("Break: " .. CFG.breakItem .. "  x" .. GetTotalByCode(CFG.breakItem))
+            and ("Break: " .. _kn(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
             or "Break: NOT SET"
     end
     if dropItemLbl then
         dropItemLbl.Text = CFG.dropItem
-            and ("Drop:  " .. CFG.dropItem .. "  x" .. GetTotalByCode(CFG.dropItem))
+            and ("Drop:  " .. _kn(CFG.dropItemKey) .. "  x" .. GetTotalByCode(CFG.dropItem))
             or "Drop:  NOT SET"
     end
     if storageInput then storageInput.Text = storageWorld end
