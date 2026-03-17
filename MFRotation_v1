@@ -423,7 +423,9 @@ local function WriteAllSaves(d)
 end
 
 -- Called at every phase transition — async so it never blocks the loop
-local function SaveProgress()
+-- autoResume=true means: when the script reloads after a server switch,
+-- automatically call RunCycle() without user pressing START.
+local function SaveProgress(autoResume)
     task.spawn(function()
         pcall(function()
             local all = LoadAllSaves()
@@ -442,13 +444,25 @@ local function SaveProgress()
                 safeAutoStop     = safeAutoStop,
                 safeAutoLeave    = safeAutoLeave,
                 whitelist        = wlCopy,
-                -- Store raw slot keys so they survive session restarts
                 plantItemKey     = ResolveItemKey(CFG.plantItem),
                 breakItemKey     = ResolveItemKey(CFG.breakItem),
                 dropItemKey      = ResolveItemKey(CFG.dropItem),
                 timestamp        = os.time(),
+                autoResume       = autoResume == true,
             }
             WriteAllSaves(all)
+        end)
+    end)
+end
+
+local function ClearAutoResume()
+    task.spawn(function()
+        pcall(function()
+            local all = LoadAllSaves()
+            if all[currentPlayerName] then
+                all[currentPlayerName].autoResume = false
+                WriteAllSaves(all)
+            end
         end)
     end)
 end
@@ -1487,7 +1501,7 @@ local function RunCycle()
             -- ── JOIN FARM WORLD ───────────────────────────────────
             SetStatus("→ FARM WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                 Color3.fromRGB(180, 180, 255))
-            SaveProgress()
+            SaveProgress(true)  -- autoResume: farm is switching worlds
             joinWorld(farmWorld)
             if not waitForWorldLoad(90) then
                 SetStatus("⚠ Load timeout: " .. farmWorld .. " — retrying",
@@ -1510,7 +1524,7 @@ local function RunCycle()
 
                 -- ── HARVEST ───────────────────────────────────────
                 if not skipHarvest then
-                    currentPhase = "harvesting"; SaveProgress()
+                    currentPhase = "harvesting"; SaveProgress(true)
                     SetStatus("WORLD " .. wi .. " — HARVEST", Color3.fromRGB(255, 200, 80))
                     local ok = RunHarvest(guard, resumeHarvestY)
                     if not ok or not guard() then break end
@@ -1521,7 +1535,7 @@ local function RunCycle()
 
                 -- ── BREAK ─────────────────────────────────────────
                 if not skipBreak then
-                    currentPhase = "breaking"; SaveProgress()
+                    currentPhase = "breaking"; SaveProgress(true)
                     SetStatus("WORLD " .. wi .. " — BREAK", Color3.fromRGB(220, 150, 50))
                     local ok = RunBreak(guard)
                     if not ok or not guard() then break end
@@ -1532,7 +1546,7 @@ local function RunCycle()
 
                 -- ── PLANT ─────────────────────────────────────────
                 if not skipPlant then
-                    currentPhase = "planting"; SaveProgress()
+                    currentPhase = "planting"; SaveProgress(true)
                     SetStatus("WORLD " .. wi .. " — PLANT", Color3.fromRGB(85, 215, 110))
                     local ok = RunPlant(guard, resumePlantY)
                     if not ok or not guard() then break end
@@ -1542,7 +1556,7 @@ local function RunCycle()
                 end
 
                 -- ── JOIN STORAGE WORLD ────────────────────────────
-                currentPhase = "going_storage"; SaveProgress()
+                currentPhase = "going_storage"; SaveProgress(true)
                 SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
                 joinWorld(storageWorld)
                 if not waitForWorldLoad(90) then
@@ -1553,7 +1567,7 @@ local function RunCycle()
                 if not guard() then break end
 
                 -- ── DROP ALL ──────────────────────────────────────
-                currentPhase = "dropping"; SaveProgress()
+                currentPhase = "dropping"; SaveProgress(true)
                 SetStatus("STORAGE — DROP", Color3.fromRGB(255, 180, 60))
                 RunDrop(guard)
                 if not guard() then break end
@@ -1574,6 +1588,7 @@ local function RunCycle()
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
     stopAll()
+    ClearAutoResume()  -- farm ended normally; don't auto-restart next load
     SetStatus("STOPPED", Color3.fromRGB(255, 100, 100))
 end
 
@@ -2217,6 +2232,7 @@ stopBtn.MouseButton1Click:Connect(function()
         pauseBtn.Text             = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
+    ClearAutoResume()  -- user manually stopped; don't auto-restart next load
     SetStatus("STOPPED", Color3.fromRGB(255, 100, 100))
 end)
 
@@ -2332,6 +2348,72 @@ table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
 end))
 
 table.insert(inst.connections, player.CharacterRemoving:Connect(function() stopAll() end))
+
+-- ════════════════════════════════════════════════════════════════
+--  AUTO-START  (triggered when loaded by AutoWorldSwitch.lua)
+--  If the last save has autoResume=true, restore state and call
+--  RunCycle() automatically without user pressing START.
+-- ════════════════════════════════════════════════════════════════
+task.spawn(function()
+    task.wait(0.5)  -- let GUI finish building
+
+    local all = LoadAllSaves()
+    local saved = all[currentPlayerName]
+    if not (saved and saved.autoResume == true) then
+        print("[MFRot v1.0] No autoResume flag — waiting for user to press START.")
+        return
+    end
+
+    print("[MFRot v1.0] autoResume detected — restoring and starting farm...")
+    SetStatus("Auto-resuming farm...", Color3.fromRGB(180, 220, 255))
+
+    -- Apply saved state into live variables
+    ApplyPlayerSave(currentPlayerName)
+
+    -- Sync GUI labels
+    if plantItemLbl then
+        plantItemLbl.Text = CFG.plantItem
+            and ("Plant: " .. CFG.plantItem .. "  x" .. GetTotalByCode(CFG.plantItem))
+            or "Plant: NOT SET"
+    end
+    if breakItemLbl then
+        breakItemLbl.Text = CFG.breakItem
+            and ("Break: " .. CFG.breakItem .. "  x" .. GetTotalByCode(CFG.breakItem))
+            or "Break: NOT SET"
+    end
+    if dropItemLbl then
+        dropItemLbl.Text = CFG.dropItem
+            and ("Drop:  " .. CFG.dropItem .. "  x" .. GetTotalByCode(CFG.dropItem))
+            or "Drop:  NOT SET"
+    end
+    if storageInput then storageInput.Text = storageWorld end
+    RefreshWorldList()
+
+    task.wait(1)  -- let tile watcher initialize
+
+    -- Validate before starting
+    if not CFG.plantItem or not CFG.breakItem or not CFG.dropItem then
+        SetStatus("Auto-resume: items missing — press START manually",
+            Color3.fromRGB(255, 180, 80))
+        ClearAutoResume(); return
+    end
+    if #worldList == 0 or storageWorld == "" then
+        SetStatus("Auto-resume: worlds missing — press START manually",
+            Color3.fromRGB(255, 180, 80))
+        ClearAutoResume(); return
+    end
+
+    -- Force resume mode so RunCycle picks up the saved world/phase
+    resumeEnabled = true
+    resumeTarget  = currentPlayerName
+
+    isPaused = false; isRunning = true
+    if pauseBtn then
+        pauseBtn.Text             = "Pause"
+        pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
+    end
+    task.spawn(RunCycle)
+end)
 
 -- ════════════════════════════════════════════════════════════════
 --  DONE
