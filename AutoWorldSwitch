@@ -874,6 +874,13 @@ local function RunHarvest(guardFn, resumeRowY)
     end
 
     for ri = startIdx, #rows do
+        -- Skip flag: tester pressed "Done Harvest"
+        if _G._MFRot_SkipHarvest then
+            _G._MFRot_SkipHarvest = nil
+            stopAll()
+            SetStatus("TEST: Harvest skipped", Color3.fromRGB(200, 200, 100))
+            task.wait(0.3); return true
+        end
         if not guardFn() then return false end
         local rowY = rows[ri]
         currentRowY = rowY   -- update saved state each row
@@ -1033,6 +1040,12 @@ local function RunPlant(guardFn, resumeRowY)
     end
 
     for pi = startIdx, #plantRows do
+        if _G._MFRot_SkipPlant then
+            _G._MFRot_SkipPlant = nil
+            stopAll()
+            SetStatus("TEST: Plant skipped", Color3.fromRGB(200, 200, 100))
+            task.wait(0.3); return true
+        end
         if not guardFn() then return false end
         local rowY = plantRows[pi]
         currentRowY = rowY
@@ -1244,6 +1257,12 @@ local function RunBreak(guardFn)
     ensureWatching()
 
     while guardFn() do
+        if _G._MFRot_SkipBreak then
+            _G._MFRot_SkipBreak = nil
+            stopAll()
+            SetStatus("TEST: Break skipped", Color3.fromRGB(200, 200, 100))
+            task.wait(0.3); return true
+        end
         -- Check inventory
         local remaining = GetTotalByCode(CFG.breakItem)
         if remaining <= 0 then
@@ -2216,7 +2235,45 @@ scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
 -- ════════════════════════════════════════════════════════════════
 startBtn.MouseButton1Click:Connect(function()
     if isRunning then return end
-    -- Quick validate before spawning
+
+    -- If resume is enabled, apply saved data NOW before validation
+    -- so that CFG items and worldList are populated from the save
+    if resumeEnabled then
+        local targetName = resumeTarget or currentPlayerName
+        local saved = ApplyPlayerSave(targetName)
+        if saved then
+            -- Sync GUI to show restored values
+            if plantItemLbl then
+                plantItemLbl.Text = CFG.plantItem
+                    and ("Plant: " .. CFG.plantItem .. "  x" .. GetTotalByCode(CFG.plantItem))
+                    or "Plant: NOT SET"
+            end
+            if breakItemLbl then
+                breakItemLbl.Text = CFG.breakItem
+                    and ("Break: " .. CFG.breakItem .. "  x" .. GetTotalByCode(CFG.breakItem))
+                    or "Break: NOT SET"
+            end
+            if dropItemLbl then
+                dropItemLbl.Text = CFG.dropItem
+                    and ("Drop:  " .. CFG.dropItem .. "  x" .. GetTotalByCode(CFG.dropItem))
+                    or "Drop:  NOT SET"
+            end
+            if storageInput and storageWorld ~= "" then
+                storageInput.Text = storageWorld
+            end
+            RefreshWorldList()
+            SetStatus("Restored: W" .. currentWorldIdx .. "/" .. #worldList
+                .. " [" .. currentPhase .. "]", Color3.fromRGB(180, 220, 255))
+        else
+            SetStatus("No save found for " .. targetName, Color3.fromRGB(255, 180, 80))
+        end
+    end
+
+    -- Apply storage world text box in case user typed and didn't defocus
+    local sv = storageInput.Text:match("^%s*(.-)%s*$")
+    if sv ~= "" then storageWorld = sv end
+
+    -- Validate
     if #worldList == 0 then
         SetStatus("Add at least 1 farm world!", Color3.fromRGB(255, 80, 80)); return end
     if storageWorld == "" then
@@ -2227,9 +2284,7 @@ startBtn.MouseButton1Click:Connect(function()
         SetStatus("Apply BREAK item!", Color3.fromRGB(255, 80, 80)); return end
     if not CFG.dropItem then
         SetStatus("Apply DROP item!", Color3.fromRGB(255, 80, 80)); return end
-    -- Apply storage world text box in case user typed and didn't defocus
-    local sv = storageInput.Text:match("^%s*(.-)%s*$")
-    if sv ~= "" then storageWorld = sv end
+
     isPaused = false; isRunning = true
     pauseBtn.Text             = "⏸ PAUSE"
     pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
