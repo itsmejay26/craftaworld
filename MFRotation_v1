@@ -1,44 +1,33 @@
 --[[
-    MFRotation_Start.lua  ·  RUN ONCE TO SHOW GUI
-    AutoWorldSwitch.lua (in Autoexecute) runs the farm automatically.
-    This script just makes the GUI visible for your first setup.
+    MFRotation_Start.lua
+    Run this once to show the Multi Farm Rotation GUI.
+    AutoWorldSwitch.lua in your Autoexecute folder does everything else.
 ]]
 
-local player = game:GetService("Players").LocalPlayer
-local gui    = player:WaitForChild("PlayerGui")
+local gui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
 
--- If GUI is already showing (autoexec already ran it), just un-minimize
+-- The autoexec already built the GUI — just show it
 local mfGui = gui:FindFirstChild("MFRotGui")
-if mfGui then
-    local main = mfGui:FindFirstChild("Main")
-    if main then
-        main.Visible = true
-        -- Expand if minimized
-        for _, c in pairs(main:GetDescendants()) do
-            if c:IsA("TextButton") and c.Text == "+" then
-                c.Text = "−"
-                main.Size = UDim2.new(0, 360, 0, 396)
-                local sf = main:FindFirstChildOfClass("ScrollingFrame")
-                if sf then sf.Visible = true end
-                break
-            end
-        end
-        print("[MFRot Start] GUI shown.")
-    end
+if not mfGui then
+    warn("[MFRot] GUI not found. Make sure AutoWorldSwitch.lua is in your Autoexecute folder.")
+    warn("[MFRot] Rejoin the game and run this script again.")
     return
 end
 
--- GUI not running — load from workspace (saved by autoexec on first run)
-if isfile and isfile("MFRotFarm.lua") then
-    _G._MFRot_ManualStart = true   -- tell auto-start block: don't auto-resume
-    local ok, src = pcall(readfile, "MFRotFarm.lua")
-    if ok and src ~= "" then
-        local ok2, fn = pcall(loadstring, src)
-        if ok2 and fn then pcall(fn) end
+local main = mfGui:FindFirstChild("Main")
+if not main then return end
+
+main.Visible = true
+
+-- Un-minimize if needed
+for _, c in pairs(main:GetDescendants()) do
+    if c:IsA("TextButton") and c.Text == "+" then
+        c.Text = "−"
+        main.Size = UDim2.new(0, 360, 0, 396)
+        local sf = main:FindFirstChildOfClass("ScrollingFrame")
+        if sf then sf.Visible = true end
+        break
     end
-    return
 end
 
-warn("[MFRot Start] Farm script not installed yet.")
-warn("[MFRot Start] Make sure AutoWorldSwitch.lua is in your Autoexecute folder,")
-warn("[MFRot Start] then rejoin once — it installs itself automatically.")
+print("[MFRot] GUI ready — configure and press START.")
