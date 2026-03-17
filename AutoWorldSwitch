@@ -112,45 +112,56 @@ do
 
             if tp then
                 pcall(function() writefile("craftaworld/pending_world.txt", "") end)
-                print("[MFRot] Joining world: " .. target)
+                print("[MFRot] Firing tp:FireServer(" .. target .. ")")
                 lbl2.Text = "Joining  " .. target .. "..."
                 pcall(function() tp:FireServer(target) end)
-                _G._MFRot_JoinedWorld  = target
-                _G._MFRot_ServerSwitch = true
+                -- NOTE: if tp:FireServer is a Roblox teleport, this script
+                -- dies here and the world server's autoexec continues.
+                -- If it is in-game (same server), we fall through and wait.
             else
                 warn("[MFRot] tp remote not found in lobby")
                 lbl2.Text = "Error: tp remote not found"
             end
         end
 
-        -- Wait until world is loaded (Tiles appear, tp remote gone)
-        -- This works because the game loads the world within the same
-        -- script context — no server change occurs.
+        -- Wait for Remotes to appear (signals we are inside a world).
+        -- If tp:FireServer caused a Roblox teleport this loop never runs
+        -- (script dies). If it is in-game, this loop waits until loaded.
         local waitDeadline = tick() + 120
         while tick() < waitDeadline do
-            if RS:FindFirstChild("Remotes") and workspace:FindFirstChild("Tiles")
-            and #workspace:FindFirstChild("Tiles"):GetChildren() > 0 then
-                break
-            end
-            task.wait(0.5)
+            if RS:FindFirstChild("Remotes") then break end
+            task.wait(0.4)
+        end
+        -- Wait for Tiles to populate
+        local tilesDeadline = tick() + 30
+        while tick() < tilesDeadline do
+            local tf = workspace:FindFirstChild("Tiles")
+            if tf and #tf:GetChildren() > 0 then break end
+            task.wait(0.4)
         end
 
-        task.wait(1)  -- let world settle
+        task.wait(1.5)
         lbl2.Text = "Joined! Loading farm..."
         task.wait(0.5)
         if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
     else
-        -- Already in a world — check from_switch.txt for auto-resume
-        local fromSwitch = false
+        -- In a world — check from_switch.txt for auto-resume
+        -- from_switch.txt stores the world name written by joinWorld()
+        local switchedWorld = ""
         pcall(function()
             if isfile and isfile("craftaworld/from_switch.txt") then
-                fromSwitch = true
-                writefile("craftaworld/from_switch.txt", "")
+                local raw = readfile("craftaworld/from_switch.txt")
+                local w = raw and raw:match("^%s*(.-)%s*$") or ""
+                if w ~= "" then switchedWorld = w end
+                writefile("craftaworld/from_switch.txt", "")  -- clear it
             end
         end)
-        if fromSwitch then
+        if switchedWorld ~= "" then
+            -- Tell RunCycle which world we just arrived in
+            -- so it skips calling joinWorld() for this world
+            _G._MFRot_JoinedWorld  = switchedWorld
             _G._MFRot_ServerSwitch = true
-            print("[MFRot] Resumed from farm switch")
+            print("[MFRot] Switched into world: " .. switchedWorld)
         end
     end
 end
@@ -478,10 +489,11 @@ local function joinWorld(worldName)
     pcall(makefolder, DATA_FOLDER)
     -- Write target so the lobby server knows which world to join
     pcall(function() writefile(DATA_FILE, worldName) end)
-    -- Write switch flag so the world server knows to auto-resume
+    -- Write the world NAME into from_switch.txt so the world server
+    -- can set _G._MFRot_JoinedWorld correctly on next load
     pcall(function()
         makefolder("craftaworld")
-        writefile("craftaworld/from_switch.txt", "1")
+        writefile("craftaworld/from_switch.txt", worldName)
     end)
 
     if isInLobby() then
