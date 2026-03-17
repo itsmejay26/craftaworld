@@ -1,7 +1,7 @@
 --[[
     MULTI FARM ROTATION v1.0
     PUT THIS FILE IN YOUR AUTOEXECUTE FOLDER.
-    Run MFRotation_Start.lua once to show the GUI and start.
+    GUI shows automatically on every server load. No other script needed.
 ]]
 
 -- ════════════════════════════════════════════════════════════════
