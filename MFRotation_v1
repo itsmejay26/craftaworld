@@ -1,27 +1,179 @@
--- MFRotation_Start.lua
--- Shows the farm GUI. AutoWorldSwitch.lua (Autoexecute) must have run first.
+--[[
+    MFRot_Tester.lua
+    Execute this while the farm is running to get a small control
+    panel. Press any button to instantly finish that phase and let
+    the farm proceed to the next one — useful for testing the full
+    world-switch and rotation loop without waiting for real farming.
+]]
 
-local gui = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-local mfGui = gui:FindFirstChild("MFRotGui")
+local player = game:GetService("Players").LocalPlayer
+local gui    = player:WaitForChild("PlayerGui")
 
-if mfGui then
-    -- GUI exists — un-minimize and show it
-    local main = mfGui:FindFirstChild("Main")
-    if main then
-        main.Visible = true
-        for _, c in pairs(main:GetDescendants()) do
-            if c:IsA("TextButton") and c.Text == "+" then
-                c.Text = "−"
-                main.Size = UDim2.new(0, 360, 0, 396)
-                local sf = main:FindFirstChildOfClass("ScrollingFrame")
-                if sf then sf.Visible = true end
-                break
+-- Remove old tester if re-executing
+local old = gui:FindFirstChild("MFRot_TesterGui")
+if old then old:Destroy() end
+
+local sg = Instance.new("ScreenGui", gui)
+sg.Name = "MFRot_TesterGui"
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+sg.DisplayOrder = 9999
+
+local win = Instance.new("Frame", sg)
+win.Size = UDim2.new(0, 220, 0, 190)
+win.Position = UDim2.new(1, -230, 0, 10)   -- top-right corner
+win.BackgroundColor3 = Color3.fromRGB(14, 18, 14)
+win.BorderSizePixel = 0
+win.ClipsDescendants = true
+Instance.new("UICorner", win).CornerRadius = UDim.new(0, 10)
+local ws = Instance.new("UIStroke", win)
+ws.Color = Color3.fromRGB(80, 160, 80); ws.Thickness = 1.5
+
+-- Title bar (draggable)
+local bar = Instance.new("Frame", win)
+bar.Size = UDim2.new(1, 0, 0, 30)
+bar.BackgroundColor3 = Color3.fromRGB(24, 36, 24)
+bar.BorderSizePixel = 0
+Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 10)
+local barFill = Instance.new("Frame", bar)
+barFill.Size = UDim2.new(1, 0, 0, 10)
+barFill.Position = UDim2.new(0, 0, 1, -10)
+barFill.BackgroundColor3 = Color3.fromRGB(24, 36, 24)
+barFill.BorderSizePixel = 0
+
+local title = Instance.new("TextLabel", bar)
+title.Size = UDim2.new(1, -36, 1, 0)
+title.Position = UDim2.new(0, 8, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "MFRot Tester"
+title.TextColor3 = Color3.fromRGB(120, 220, 130)
+title.TextSize = 11; title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+
+local closeBtn = Instance.new("TextButton", bar)
+closeBtn.Size = UDim2.new(0, 22, 0, 22)
+closeBtn.Position = UDim2.new(1, -26, 0.5, -11)
+closeBtn.BackgroundColor3 = Color3.fromRGB(160, 50, 50)
+closeBtn.BorderSizePixel = 0
+closeBtn.Text = "×"; closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.TextSize = 14; closeBtn.Font = Enum.Font.GothamBold
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 5)
+closeBtn.MouseButton1Click:Connect(function() sg:Destroy() end)
+
+-- Drag
+local dragging, dragStart, startPos = false, nil, nil
+bar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true; dragStart = i.Position; startPos = win.Position
+    end
+end)
+game:GetService("UserInputService").InputChanged:Connect(function(i)
+    if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = i.Position - dragStart
+        win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                  startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+game:GetService("UserInputService").InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+
+-- Status label
+local statusLbl = Instance.new("TextLabel", win)
+statusLbl.Size = UDim2.new(1, -16, 0, 18)
+statusLbl.Position = UDim2.new(0, 8, 0, 36)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Farm status: --"
+statusLbl.TextColor3 = Color3.fromRGB(160, 200, 160)
+statusLbl.TextSize = 9; statusLbl.Font = Enum.Font.Gotham
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+statusLbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+-- Button builder
+local function makeBtn(label, y, color, onClick)
+    local b = Instance.new("TextButton", win)
+    b.Size = UDim2.new(1, -16, 0, 28)
+    b.Position = UDim2.new(0, 8, 0, y)
+    b.BackgroundColor3 = color
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.TextSize = 11; b.Font = Enum.Font.GothamBold
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(onClick)
+    return b
+end
+
+local function flash(btn, msg)
+    statusLbl.Text = msg
+    statusLbl.TextColor3 = Color3.fromRGB(120, 255, 150)
+    local orig = btn.BackgroundColor3
+    btn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    task.wait(0.3)
+    btn.BackgroundColor3 = orig
+end
+
+local harvestBtn = makeBtn("✓  Done Harvest  →  Break", 62, Color3.fromRGB(160, 120, 30), function() end)
+local breakBtn   = makeBtn("✓  Done Break  →  Plant",   98, Color3.fromRGB(130, 60, 160),  function() end)
+local plantBtn   = makeBtn("✓  Done Plant  →  Storage", 134, Color3.fromRGB(40, 120, 60),  function() end)
+local skipAllBtn = makeBtn("⏩  Skip ALL phases",         162, Color3.fromRGB(180, 60, 60),  function() end)
+
+harvestBtn.MouseButton1Click:Connect(function()
+    _G._MFRot_SkipHarvest = true
+    harvestBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    statusLbl.Text = "⏩ Harvest — skipping now..."
+    statusLbl.TextColor3 = Color3.fromRGB(255, 220, 100)
+    task.wait(0.4); harvestBtn.BackgroundColor3 = Color3.fromRGB(160, 120, 30)
+end)
+
+breakBtn.MouseButton1Click:Connect(function()
+    _G._MFRot_SkipBreak = true
+    breakBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    statusLbl.Text = "⏩ Break — skipping now..."
+    statusLbl.TextColor3 = Color3.fromRGB(200, 140, 255)
+    task.wait(0.4); breakBtn.BackgroundColor3 = Color3.fromRGB(130, 60, 160)
+end)
+
+plantBtn.MouseButton1Click:Connect(function()
+    _G._MFRot_SkipPlant = true
+    plantBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    statusLbl.Text = "⏩ Plant — skipping now..."
+    statusLbl.TextColor3 = Color3.fromRGB(120, 255, 150)
+    task.wait(0.4); plantBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+end)
+
+skipAllBtn.MouseButton1Click:Connect(function()
+    _G._MFRot_SkipHarvest = true
+    _G._MFRot_SkipBreak   = true
+    _G._MFRot_SkipPlant   = true
+    skipAllBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    statusLbl.Text = "⏩ All phases skipped!"
+    statusLbl.TextColor3 = Color3.fromRGB(255, 120, 120)
+    task.wait(0.4); skipAllBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+end)
+
+win.Size = UDim2.new(0, 220, 0, 198)
+
+-- Live status sync — reads the statusLabel global set by AutoWorldSwitch
+task.spawn(function()
+    while sg and sg.Parent do
+        task.wait(0.3)
+        -- _G.MFRotInst exists while the farm script is running
+        if _G.MFRotInst and not _G.MFRotInst.dead then
+            -- Read status directly from the shared global statusLabel
+            local sl = _G._MFRot_StatusLabel
+            if sl and sl.Parent then
+                statusLbl.Text  = sl.Text
+                statusLbl.TextColor3 = sl.TextColor3
+            else
+                statusLbl.Text = "Farm running — no status yet"
+                statusLbl.TextColor3 = Color3.fromRGB(160, 200, 160)
             end
+        else
+            statusLbl.Text = "Farm not running"
+            statusLbl.TextColor3 = Color3.fromRGB(180, 130, 130)
         end
     end
-    print("[MFRot] GUI shown.")
-else
-    -- Still in lobby — autoexec returned early without building GUI.
-    -- The GUI will be built automatically once you enter a world.
-    print("[MFRot] Still in lobby — GUI will appear once you enter a world.")
-end
+end)
+
+print("[MFRot Tester] Ready.")
