@@ -19,10 +19,8 @@ _G.MFRotInst = inst
 
 
 
--- (Autoexec — no self-save or queue_on_teleport needed)
-
 -- ════════════════════════════════════════════════════════════════
---  SERVICES
+--  SERVICES  (only lobby-safe ones declared here)
 -- ════════════════════════════════════════════════════════════════
 local Players  = game:GetService("Players")
 local RS       = game:GetService("ReplicatedStorage")
@@ -31,13 +29,96 @@ local UIS      = game:GetService("UserInputService")
 local VIM      = game:GetService("VirtualInputManager")
 local HttpSvc  = game:GetService("HttpService")
 
-local player  = Players.LocalPlayer
-local gui     = player:WaitForChild("PlayerGui")
+local player = Players.LocalPlayer
+local gui    = player:WaitForChild("PlayerGui")
+
+-- ════════════════════════════════════════════════════════════════
+--  LOBBY DETECTION — MUST run before any world-specific remotes.
+--  In the lobby: Remotes, InventoryUI, Tiles do NOT exist.
+--  We handle the join here, wait until inside the world,
+--  then fall through to load world remotes and the full script.
+-- ════════════════════════════════════════════════════════════════
+do
+    local function inLobby()  return RS:FindFirstChild("tp") ~= nil end
+    local function worldLoaded()
+        if inLobby() then return false end
+        local tf = workspace:FindFirstChild("Tiles")
+        return tf ~= nil and #tf:GetChildren() > 0
+    end
+
+    if inLobby() then
+        local old = gui:FindFirstChild("MFRotGui")
+        if old then old:Destroy() end
+
+        local target = ""
+        pcall(function()
+            local c = readfile("craftaworld/pending_world.txt")
+            local t = c and c:match("^%s*(.-)%s*$")
+            if t and t ~= "" then target = t end
+        end)
+
+        -- Lobby overlay
+        local lobbyGui = Instance.new("ScreenGui", gui)
+        lobbyGui.Name = "MFRot_LobbyGui"; lobbyGui.ResetOnSpawn = false
+        lobbyGui.IgnoreGuiInset = true; lobbyGui.DisplayOrder = 9999
+        local bg = Instance.new("Frame", lobbyGui)
+        bg.Size = UDim2.new(0,300,0,60); bg.Position = UDim2.new(0.5,-150,0.5,-30)
+        bg.BackgroundColor3 = Color3.fromRGB(16,22,18); bg.BorderSizePixel = 0
+        Instance.new("UICorner", bg).CornerRadius = UDim.new(0,10)
+        local st = Instance.new("UIStroke", bg)
+        st.Color = Color3.fromRGB(55,140,70); st.Thickness = 1.5
+        local t1 = Instance.new("TextLabel", bg)
+        t1.Size = UDim2.new(1,-12,0,20); t1.Position = UDim2.new(0,8,0,6)
+        t1.BackgroundTransparency=1; t1.Text="Multi Farm Rotation v1.0"
+        t1.TextColor3=Color3.fromRGB(100,165,115); t1.TextSize=10
+        t1.Font=Enum.Font.GothamBold; t1.TextXAlignment=Enum.TextXAlignment.Left
+        local t2 = Instance.new("TextLabel", bg)
+        t2.Size = UDim2.new(1,-12,0,26); t2.Position = UDim2.new(0,8,0,28)
+        t2.BackgroundTransparency=1
+        t2.Text = target~="" and ("Joining  "..target.."...") or "In lobby..."
+        t2.TextColor3=Color3.fromRGB(180,255,195); t2.TextSize=11
+        t2.Font=Enum.Font.GothamBold; t2.TextXAlignment=Enum.TextXAlignment.Left
+        task.spawn(function()
+            local d=0
+            while lobbyGui and lobbyGui.Parent do
+                task.wait(0.5); d=(d%3)+1
+                if worldLoaded() then t2.Text="Joined! Loading..."; break end
+                t2.Text=(target~="" and ("Joining  "..target) or "Lobby")..string.rep(".",d)
+            end
+        end)
+
+        -- Fire join
+        if target ~= "" then
+            pcall(function() writefile("craftaworld/pending_world.txt","") end)
+            task.wait(0.8)
+            local tp = RS:FindFirstChild("tp")
+            if tp then pcall(function() tp:FireServer(target) end) end
+        end
+
+        -- Wait until in world
+        local deadline = tick()+120
+        while not worldLoaded() and tick()<deadline do task.wait(0.4) end
+        task.wait(1.5)
+
+        if target ~= "" then
+            _G._MFRot_JoinedWorld  = target
+            _G._MFRot_ServerSwitch = true
+        end
+
+        if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
+        local old2 = gui:FindFirstChild("MFRot_LobbyGui")
+        if old2 then old2:Destroy() end
+    end
+end
+
+-- ════════════════════════════════════════════════════════════════
+--  WORLD REMOTES — safe to load now (lobby block ensures we're
+--  inside a world before reaching this line)
+-- ════════════════════════════════════════════════════════════════
 local Remotes = RS:WaitForChild("Remotes")
 local placeR  = Remotes:WaitForChild("PlayerPlaceItem")
 local fstR    = Remotes:WaitForChild("PlayerFist")
 
--- Drop remotes (from 1-Line Auto Farm — same pattern)
 local playerDropR, uiPromptR
 pcall(function() playerDropR = Remotes:WaitForChild("PlayerDrop", 5) end)
 pcall(function()
@@ -57,125 +138,6 @@ local invScroll = invUI
     :WaitForChild("InventoryFrame", 10)
     :WaitForChild("InventoryScroll", 10)
 if not invScroll then warn("[MFRot] invScroll not found"); return end
-
--- ════════════════════════════════════════════════════════════════
---  LOBBY DETECTION
---  This script runs on every server load (it IS the auto-execute).
---  If it loads into a lobby server it shows a minimal overlay,
---  reads pending_world.txt, fires tp:FireServer to join the target
---  world, waits until fully loaded, then continues into the full
---  GUI and farm logic below.
--- ════════════════════════════════════════════════════════════════
-do
-    local function inLobby()
-        return RS:FindFirstChild("tp") ~= nil
-    end
-    local function worldLoaded()
-        local tf = workspace:FindFirstChild("Tiles")
-        return tf and #tf:GetChildren() > 0 and not inLobby()
-    end
-
-    if inLobby() then
-        -- Destroy any stale MFRot GUI from the previous session
-        local oldGui = gui:FindFirstChild("MFRotGui")
-        if oldGui then oldGui:Destroy() end
-
-        -- Read pending world name
-        local pendingName = ""
-        pcall(function()
-            local c = readfile("craftaworld/pending_world.txt")
-            local t = c and c:match("^%s*(.-)%s*$")
-            if t and t ~= "" then pendingName = t end
-        end)
-
-        -- Minimal "Joining..." overlay
-        local lobbyGui = Instance.new("ScreenGui", gui)
-        lobbyGui.Name         = "MFRot_LobbyGui"
-        lobbyGui.ResetOnSpawn = false
-        lobbyGui.IgnoreGuiInset = true
-        lobbyGui.DisplayOrder = 9999
-
-        local bg = Instance.new("Frame", lobbyGui)
-        bg.Size             = UDim2.new(0, 300, 0, 60)
-        bg.Position         = UDim2.new(0.5, -150, 0.5, -30)
-        bg.BackgroundColor3 = Color3.fromRGB(16, 22, 18)
-        bg.BorderSizePixel  = 0
-        Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
-        local stroke = Instance.new("UIStroke", bg)
-        stroke.Color = Color3.fromRGB(55, 140, 70); stroke.Thickness = 1.5
-
-        local topLbl = Instance.new("TextLabel", bg)
-        topLbl.Size = UDim2.new(1, -16, 0, 24); topLbl.Position = UDim2.new(0, 8, 0, 6)
-        topLbl.BackgroundTransparency = 1
-        topLbl.Text = "Multi Farm Rotation v1.0"
-        topLbl.TextColor3 = Color3.fromRGB(100, 165, 115)
-        topLbl.TextSize = 10; topLbl.Font = Enum.Font.GothamBold
-        topLbl.TextXAlignment = Enum.TextXAlignment.Left
-
-        local joinLbl = Instance.new("TextLabel", bg)
-        joinLbl.Size = UDim2.new(1, -16, 0, 22); joinLbl.Position = UDim2.new(0, 8, 0, 30)
-        joinLbl.BackgroundTransparency = 1
-        joinLbl.Text = pendingName ~= "" and ("Joining  " .. pendingName .. "...") or "In lobby — waiting..."
-        joinLbl.TextColor3 = Color3.fromRGB(180, 255, 195)
-        joinLbl.TextSize = 11; joinLbl.Font = Enum.Font.GothamBold
-        joinLbl.TextXAlignment = Enum.TextXAlignment.Left
-
-        -- Dot animation
-        task.spawn(function()
-            local dots = 0
-            while lobbyGui and lobbyGui.Parent do
-                dots = (dots % 3) + 1
-                if worldLoaded() then
-                    joinLbl.Text = "Joined! Loading farm..."
-                    task.wait(0.8); break
-                end
-                local n = pendingName
-                pcall(function()
-                    local c = readfile("craftaworld/pending_world.txt")
-                    local t = c and c:match("^%s*(.-)%s*$")
-                    if t and t ~= "" then n = t end
-                end)
-                joinLbl.Text = (n ~= "" and ("Joining  " .. n) or "Waiting for world") .. string.rep(".", dots)
-                task.wait(0.5)
-            end
-        end)
-
-        -- If there is a pending world, fire the join directly
-        if pendingName ~= "" then
-            -- Clear the file before firing
-            pcall(function() writefile("craftaworld/pending_world.txt", "") end)
-            task.wait(0.8)
-            local tp = RS:FindFirstChild("tp")
-            if tp then
-                pcall(function() tp:FireServer(pendingName) end)
-            end
-        end
-
-        -- Block until world is fully loaded
-        local waitDeadline = tick() + 120
-        while tick() < waitDeadline do
-            if worldLoaded() then break end
-            task.wait(0.4)
-        end
-
-        -- Extra settle for tile watcher
-        task.wait(1.5)
-
-        -- Store which world we just joined so RunCycle can skip
-        -- the joinWorld() call for it (we're already here).
-        -- Also mark server-switch ONLY when there was a pending world —
-        -- this prevents auto-start when user manually runs from lobby.
-        if pendingName ~= "" then
-            _G._MFRot_JoinedWorld  = pendingName
-            _G._MFRot_ServerSwitch = true  -- real farm switch, safe to auto-resume
-        end
-
-        -- Remove lobby overlay — full GUI builds below
-        if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
-        local oldLobby = gui:FindFirstChild("MFRot_LobbyGui")
-        if oldLobby then oldLobby:Destroy() end
-    end
-end
 
 -- ════════════════════════════════════════════════════════════════
 --  CONSTANTS
