@@ -59,8 +59,8 @@ do
 
     if serverType == "lobby" then
         -- Destroy stale GUI from last session
-        local old = gui:FindFirstChild("MFRotGui")
-        if old then old:Destroy() end
+        local oldGui = gui:FindFirstChild("MFRotGui")
+        if oldGui then oldGui:Destroy() end
 
         -- Read pending world
         local target = ""
@@ -102,7 +102,7 @@ do
         lbl2.TextXAlignment = Enum.TextXAlignment.Left
 
         if target ~= "" then
-            -- Wait for tp remote to be fully ready
+            -- Wait for tp remote to be ready
             local tp = RS:FindFirstChild("tp")
             local tpDeadline = tick() + 10
             while not tp and tick() < tpDeadline do
@@ -111,38 +111,47 @@ do
             end
 
             if tp then
-                -- Clear pending file now
                 pcall(function() writefile("craftaworld/pending_world.txt", "") end)
-                print("[MFRot] Lobby: joining " .. target)
+                print("[MFRot] Joining world: " .. target)
                 lbl2.Text = "Joining  " .. target .. "..."
                 pcall(function() tp:FireServer(target) end)
-                -- The player is now teleporting. This lobby server script
-                -- will stop executing shortly. Just wait briefly so the
-                -- teleport has time to fire, then return so nothing below
-                -- (which requires world remotes) tries to run.
-                task.wait(3)
+                _G._MFRot_JoinedWorld  = target
+                _G._MFRot_ServerSwitch = true
             else
                 warn("[MFRot] tp remote not found in lobby")
+                lbl2.Text = "Error: tp remote not found"
             end
         end
 
-        -- Still in lobby (either no target, or join fired and we're waiting
-        -- to be teleported) — do NOT continue into world-specific code.
-        return
-    end
-
-    -- ── We are in a WORLD server ──────────────────────────────────
-    -- Check if we got here via a farm world switch (from_switch.txt)
-    local fromSwitch = false
-    pcall(function()
-        if isfile and isfile("craftaworld/from_switch.txt") then
-            fromSwitch = true
-            writefile("craftaworld/from_switch.txt", "")
+        -- Wait until world is loaded (Tiles appear, tp remote gone)
+        -- This works because the game loads the world within the same
+        -- script context — no server change occurs.
+        local waitDeadline = tick() + 120
+        while tick() < waitDeadline do
+            if RS:FindFirstChild("Remotes") and workspace:FindFirstChild("Tiles")
+            and #workspace:FindFirstChild("Tiles"):GetChildren() > 0 then
+                break
+            end
+            task.wait(0.5)
         end
-    end)
-    if fromSwitch then
-        _G._MFRot_ServerSwitch = true
-        print("[MFRot] Resumed from farm switch")
+
+        task.wait(1)  -- let world settle
+        lbl2.Text = "Joined! Loading farm..."
+        task.wait(0.5)
+        if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
+    else
+        -- Already in a world — check from_switch.txt for auto-resume
+        local fromSwitch = false
+        pcall(function()
+            if isfile and isfile("craftaworld/from_switch.txt") then
+                fromSwitch = true
+                writefile("craftaworld/from_switch.txt", "")
+            end
+        end)
+        if fromSwitch then
+            _G._MFRot_ServerSwitch = true
+            print("[MFRot] Resumed from farm switch")
+        end
     end
 end
 
