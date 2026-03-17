@@ -1,182 +1,205 @@
 --[[
-    AutoWorldSwitch.lua
+    AutoWorldSwitch.lua  ·  AUTO-EXECUTE SCRIPT
     ═══════════════════════════════════════════════════════════════
-    Place this file inside your executor's Autoexecute folder.
-    It runs automatically on EVERY server load.
+    Place this file in your executor's Autoexecute folder.
+    It runs automatically on EVERY server load — no manual steps.
 
-    What it does:
-      1. Reads craftaworld/pending_world.txt
-      2. If a target world is found AND we are in the lobby:
-           → shows a tiny "Joining [worldname]..." overlay
-           → fires tp:FireServer(worldName)
-           → clears the file
-      3. If a target world is found but NOT in lobby:
-           → saves the target back (so it persists)
-           → exits to lobby (main script or next load will re-read)
-      4. If no pending world: idles silently
-      5. After joining, loads MFRotation_v1.lua if it exists
-         so the full farm script resumes in the new world.
-
-    The main script (MFRotation_v1.lua) handles writing the target
-    and calling RequestPlayerExitWorld when it needs to switch worlds.
+    Full automated flow:
+      1. Reads craftaworld/pending_world.txt for a target world
+      2. If in lobby + pending world found:
+           → Show "Joining [world]..." overlay GUI
+           → Fire tp:FireServer(worldName)
+           → Wait until fully inside the world (Tiles loaded)
+           → Load MFRotation_v1.lua  ← this script auto-resumes
+             the farm because SaveProgress(true) was called before
+             the world switch
+      3. If in a world + pending world found:
+           → Keep target saved and exit to lobby
+             (next load handles the join)
+      4. If no pending world:
+           → Just load MFRotation_v1.lua normally (manual mode,
+             user presses START themselves)
     ═══════════════════════════════════════════════════════════════
 ]]
 
-local DATA_FOLDER = "craftaworld"
-local DATA_FILE   = "craftaworld/pending_world.txt"
-local MAIN_FILE   = "MFRotation_v1.lua"
+local DATA_FILE  = "craftaworld/pending_world.txt"
+local MAIN_FILE  = "MFRotation_v1.lua"
 
-local RS      = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
-local player  = Players.LocalPlayer
-local gui     = player:WaitForChild("PlayerGui")
+local RS         = game:GetService("ReplicatedStorage")
+local Players    = game:GetService("Players")
+local player     = Players.LocalPlayer
+local gui        = player:WaitForChild("PlayerGui")
 
--- ── Lobby detection ──────────────────────────────────────────────
+-- ── Helpers ──────────────────────────────────────────────────────
 local function isInLobby()
     return RS:FindFirstChild("tp") ~= nil
 end
 
--- ── Minimal lobby GUI ────────────────────────────────────────────
-local function showLobbyGui(message)
-    -- Remove any existing lobby notice
-    local old = gui:FindFirstChild("MFRot_LobbyGui")
-    if old then old:Destroy() end
-
-    local sg = Instance.new("ScreenGui", gui)
-    sg.Name           = "MFRot_LobbyGui"
-    sg.ResetOnSpawn   = false
-    sg.IgnoreGuiInset = true
-    sg.DisplayOrder   = 9999
-
-    local bg = Instance.new("Frame", sg)
-    bg.Size             = UDim2.new(0, 280, 0, 54)
-    bg.Position         = UDim2.new(0.5, -140, 0, 14)
-    bg.BackgroundColor3 = Color3.fromRGB(16, 22, 18)
-    bg.BorderSizePixel  = 0
-    Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
-    local stroke = Instance.new("UIStroke", bg)
-    stroke.Color = Color3.fromRGB(55, 140, 70); stroke.Thickness = 1.5
-
-    local icon = Instance.new("TextLabel", bg)
-    icon.Size = UDim2.new(0, 32, 1, 0); icon.Position = UDim2.new(0, 10, 0, 0)
-    icon.BackgroundTransparency = 1; icon.Text = "🌐"
-    icon.TextSize = 20; icon.Font = Enum.Font.GothamBold
-    icon.TextXAlignment = Enum.TextXAlignment.Center
-
-    local lbl = Instance.new("TextLabel", bg)
-    lbl.Size = UDim2.new(1, -52, 1, 0); lbl.Position = UDim2.new(0, 46, 0, 0)
-    lbl.BackgroundTransparency = 1; lbl.Text = message
-    lbl.TextColor3 = Color3.fromRGB(180, 255, 195)
-    lbl.TextSize = 11; lbl.Font = Enum.Font.GothamBold
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.TextWrapped = true
-
-    return sg, lbl
+local function worldIsLoaded()
+    if isInLobby() then return false end
+    local tf = workspace:FindFirstChild("Tiles")
+    return tf ~= nil and #tf:GetChildren() > 0
 end
 
 local function removeLobbyGui()
-    local old = gui:FindFirstChild("MFRot_LobbyGui")
-    if old then old:Destroy() end
+    local g = gui:FindFirstChild("MFRot_LobbyGui")
+    if g then g:Destroy() end
+end
+
+-- Minimal overlay shown while in lobby / joining
+local function makeLobbyGui(msg)
+    removeLobbyGui()
+    local sg = Instance.new("ScreenGui", gui)
+    sg.Name = "MFRot_LobbyGui"; sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true; sg.DisplayOrder = 9999
+
+    local bg = Instance.new("Frame", sg)
+    bg.Size = UDim2.new(0, 300, 0, 64)
+    bg.Position = UDim2.new(0.5, -150, 0.5, -32)
+    bg.BackgroundColor3 = Color3.fromRGB(16, 22, 18)
+    bg.BorderSizePixel = 0
+    Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 10)
+    local s = Instance.new("UIStroke", bg)
+    s.Color = Color3.fromRGB(55, 140, 70); s.Thickness = 1.5
+
+    local title = Instance.new("TextLabel", bg)
+    title.Size = UDim2.new(1, -12, 0, 20); title.Position = UDim2.new(0, 10, 0, 6)
+    title.BackgroundTransparency = 1
+    title.Text = "Multi Farm Rotation v1.0"
+    title.TextColor3 = Color3.fromRGB(100, 165, 115)
+    title.TextSize = 10; title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local lbl = Instance.new("TextLabel", bg)
+    lbl.Size = UDim2.new(1, -12, 0, 28); lbl.Position = UDim2.new(0, 10, 0, 28)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = msg
+    lbl.TextColor3 = Color3.fromRGB(180, 255, 195)
+    lbl.TextSize = 12; lbl.Font = Enum.Font.GothamBold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    return lbl  -- return label so caller can update text
+end
+
+-- Load and execute MFRotation_v1.lua
+local function loadMainScript()
+    if not (isfile and isfile(MAIN_FILE)) then
+        warn("[AutoWorldSwitch] " .. MAIN_FILE .. " not found.")
+        warn("[AutoWorldSwitch] Execute MFRotation_v1.lua once manually to register it.")
+        return false
+    end
+    local ok, src = pcall(readfile, MAIN_FILE)
+    if not ok or not src or src == "" then
+        warn("[AutoWorldSwitch] Could not read " .. MAIN_FILE); return false
+    end
+    local ok2, fn = pcall(loadstring, src)
+    if not ok2 or not fn then
+        warn("[AutoWorldSwitch] Failed to compile " .. MAIN_FILE .. ": " .. tostring(fn))
+        return false
+    end
+    local ok3, err = pcall(fn)
+    if not ok3 then
+        warn("[AutoWorldSwitch] Error running " .. MAIN_FILE .. ": " .. tostring(err))
+        return false
+    end
+    return true
 end
 
 -- ── Main logic ───────────────────────────────────────────────────
 task.spawn(function()
-    -- Wait for game to fully initialize
-    task.wait(3)
+    task.wait(3)  -- wait for game to initialize
 
     -- Read pending world
+    local hasPending = false
+    local target = ""
     local ok, content = pcall(readfile, DATA_FILE)
-    if not (ok and content and content ~= "") then
-        -- No pending world — nothing to do
-        return
+    if ok and content and content ~= "" then
+        target = content:match("^%s*(.-)%s*$") or ""
+        if target ~= "" then hasPending = true end
     end
 
-    local target = content:match("^%s*(.-)%s*$")
-    if not target or target == "" then return end
+    if hasPending then
+        if isInLobby() then
+            -- ── IN LOBBY: join target world ───────────────────────
+            local lbl = makeLobbyGui("Joining  " .. target .. "...")
 
-    print("[AutoWorldSwitch] Pending world: " .. target)
-
-    if isInLobby() then
-        -- ── In lobby: join directly ───────────────────────────────
-        local sg, lbl = showLobbyGui("Joining  " .. target .. "...")
-
-        -- Small dot animation while joining
-        local dots = 0
-        local anim = task.spawn(function()
-            while sg and sg.Parent do
-                dots = (dots % 3) + 1
-                lbl.Text = "Joining  " .. target .. string.rep(".", dots)
-                task.wait(0.5)
-            end
-        end)
-
-        -- Clear the file before firing so it doesn't re-trigger
-        pcall(function() writefile(DATA_FILE, "") end)
-
-        task.wait(1)  -- slight delay so lobby UI settles
-
-        -- Fire the join
-        local tp = RS:FindFirstChild("tp")
-        if tp then
-            pcall(function() tp:FireServer(target) end)
-        else
-            -- tp remote not found; retry once
-            task.wait(1)
-            tp = RS:FindFirstChild("tp")
-            if tp then pcall(function() tp:FireServer(target) end) end
-        end
-
-        -- Wait until we're out of lobby (world is loading)
-        local deadline = tick() + 30
-        while isInLobby() and tick() < deadline do
-            task.wait(0.3)
-        end
-
-        -- Wait for Tiles to appear (confirms we're inside a world)
-        local tDeadline = tick() + 45
-        while tick() < tDeadline do
-            local tf = workspace:FindFirstChild("Tiles")
-            if tf and #tf:GetChildren() > 0 then break end
-            task.wait(0.5)
-        end
-
-        -- Small extra settle
-        task.wait(1)
-        removeLobbyGui()
-
-        -- Load main farm script so it resumes in the new world
-        if isfile and isfile(MAIN_FILE) then
-            local src = pcall(function() return readfile(MAIN_FILE) end)
-            -- Use loadstring; errors are silently swallowed
-            local ok2, fn = pcall(loadstring, readfile(MAIN_FILE))
-            if ok2 and fn then
-                local ok3 = pcall(fn)
-                if not ok3 then
-                    warn("[AutoWorldSwitch] Main script error on load.")
+            -- Animate dots while joining
+            local joining = true
+            task.spawn(function()
+                local dots = 0
+                while joining do
+                    dots = (dots % 3) + 1
+                    if lbl and lbl.Parent then
+                        lbl.Text = "Joining  " .. target .. string.rep(".", dots)
+                    end
+                    task.wait(0.5)
                 end
+            end)
+
+            -- Clear file BEFORE firing so it doesn't re-trigger on
+            -- the next load if something goes wrong
+            pcall(function() writefile(DATA_FILE, "") end)
+            task.wait(0.8)
+
+            -- Fire join
+            local tp = RS:FindFirstChild("tp")
+            if tp then
+                pcall(function() tp:FireServer(target) end)
             end
+
+            -- Wait until we leave the lobby
+            local t1 = tick()
+            while isInLobby() and tick() - t1 < 30 do
+                task.wait(0.3)
+            end
+
+            -- Wait until Tiles folder populates (world is fully loaded)
+            if lbl and lbl.Parent then
+                lbl.Text = "Loading  " .. target .. "..."
+            end
+            local t2 = tick()
+            while not worldIsLoaded() and tick() - t2 < 60 do
+                task.wait(0.4)
+            end
+
+            joining = false
+            task.wait(1.5)  -- extra settle for tile watcher
+
+            if lbl and lbl.Parent then
+                lbl.Text = "Joined " .. target .. " — starting farm..."
+            end
+            task.wait(0.5)
+            removeLobbyGui()
+
+            -- Load and run the main farm script
+            -- It will auto-resume because SaveProgress(true) was
+            -- called before the world switch
+            loadMainScript()
+
         else
-            warn("[AutoWorldSwitch] " .. MAIN_FILE .. " not found — re-execute manually.")
+            -- ── IN A WORLD: save target and exit to lobby ─────────
+            print("[AutoWorldSwitch] In world — saving target and exiting to lobby")
+            makeLobbyGui("Switching to  " .. target .. "...")
+            pcall(function() writefile(DATA_FILE, target) end)
+            task.wait(0.5)
+            local exitR = Remotes and Remotes:FindFirstChild("RequestPlayerExitWorld")
+            if not exitR then
+                local r = RS:FindFirstChild("Remotes")
+                if r then exitR = r:FindFirstChild("RequestPlayerExitWorld") end
+            end
+            if exitR then pcall(function() exitR:InvokeServer() end) end
+            -- GUI disappears naturally on server switch
         end
 
     else
-        -- ── In a world: save target and exit to lobby ─────────────
-        print("[AutoWorldSwitch] In world — exiting to lobby to join: " .. target)
-        local sg, lbl = showLobbyGui("Exiting to lobby...")
-
-        -- Keep target saved (auto-execute will read it on next load)
-        pcall(function() writefile(DATA_FILE, target) end)
-
+        -- ── NO PENDING WORLD: load main script normally ───────────
+        -- The script will show its full GUI; user sets up and presses START.
+        -- (If autoResume is saved from a previous session it will also
+        --  auto-start, but that's handled inside MFRotation_v1.lua)
+        print("[AutoWorldSwitch] No pending world. Loading main script...")
         task.wait(0.5)
-
-        local exitR = RS:FindFirstChild("Remotes")
-        if exitR then exitR = exitR:FindFirstChild("RequestPlayerExitWorld") end
-        if exitR then
-            pcall(function() exitR:InvokeServer() end)
-        end
-
-        -- GUI will disappear naturally on server switch
+        loadMainScript()
     end
 end)
 
-print("[AutoWorldSwitch] Loaded. Checking for pending world...")
+print("[AutoWorldSwitch] Loaded. Waiting 3s then checking pending world...")
