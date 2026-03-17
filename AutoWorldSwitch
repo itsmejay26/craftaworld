@@ -255,7 +255,7 @@ local resumeTarget     = nil      -- player name; nil = use current player
 local currentPlayerName = player.Name
 
 -- GUI refs set later
-local statusLabel = nil
+local statusLabel = nil  -- exposed as _G._MFRot_StatusLabel after GUI builds
 local pauseBtn    = nil
 local isMinimized = false
 local lastSelSlot = nil
@@ -796,6 +796,11 @@ end
 --    Final row: fall all the way to BREAK_FLOOR_Y
 -- ════════════════════════════════════════════════════════════════
 local function RunHarvest(guardFn, resumeRowY)
+    if _G._MFRot_SkipHarvest then
+        _G._MFRot_SkipHarvest = nil
+        SetStatus("TEST: Harvest skipped", Color3.fromRGB(200, 200, 100))
+        task.wait(0.5); return true
+    end
     fullScan(); ensureWatching()
     local MISS_DELAY = 0.65
     local rows = getAllRows()   -- Y=59, 57, 55 … 9
@@ -995,6 +1000,11 @@ end
 --      4. Miss detection: if tile not registered after PLANT_DELAY → re-place
 -- ════════════════════════════════════════════════════════════════
 local function RunPlant(guardFn, resumeRowY)
+    if _G._MFRot_SkipPlant then
+        _G._MFRot_SkipPlant = nil
+        SetStatus("TEST: Plant skipped", Color3.fromRGB(200, 200, 100))
+        task.wait(0.5); return true
+    end
     ensureWatching()
     local rows = getAllRows()   -- Y=59, 57 … 9 top-to-bottom
     -- Plant bottom-to-top, so reverse
@@ -1147,6 +1157,11 @@ end
 --         repeat
 -- ════════════════════════════════════════════════════════════════
 local function RunBreak(guardFn)
+    if _G._MFRot_SkipBreak then
+        _G._MFRot_SkipBreak = nil
+        SetStatus("TEST: Break skipped", Color3.fromRGB(200, 200, 100))
+        task.wait(0.5); return true
+    end
     if not CFG.breakItem then
         SetStatus("BREAK: No break item set!", Color3.fromRGB(255, 80, 80))
         return false
@@ -1845,6 +1860,7 @@ end
 statusLabel = mkLbl(scroll, "[ IDLE ]", Y, 20,
     Color3.fromRGB(150, 255, 180), 10, Enum.Font.GothamBold)
 statusLabel.TextWrapped = true
+_G._MFRot_StatusLabel = statusLabel  -- tester script reads this
 Y += 22
 
 local posLbl = Inf("Pos: --")
