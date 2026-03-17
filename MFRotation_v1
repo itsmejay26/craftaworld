@@ -33,6 +33,31 @@ end
 local inst = { dead = false, connections = {} }
 _G.MFRotInst = inst
 
+-- ── Early autoResume guard ────────────────────────────────────────
+-- If this script was NOT loaded by the autoexec after a real server
+-- switch (_G._MFRot_ServerSwitch is nil), clear any stale autoResume
+-- flag synchronously NOW, before the auto-start block can read it.
+-- This means: manual runs ALWAYS show full GUI and wait for START.
+if not _G._MFRot_ServerSwitch then
+    pcall(function()
+        local HttpSvc2 = game:GetService("HttpService")
+        local SAVE_FILE2 = "MFRot_SaveData.json"
+        if isfile and isfile(SAVE_FILE2) then
+            local ok, raw = pcall(readfile, SAVE_FILE2)
+            if ok and raw then
+                local ok2, data = pcall(function() return HttpSvc2:JSONDecode(raw) end)
+                if ok2 and type(data) == "table" then
+                    local pname = game:GetService("Players").LocalPlayer.Name
+                    if data[pname] then
+                        data[pname].autoResume = false
+                        pcall(function() writefile(SAVE_FILE2, HttpSvc2:JSONEncode(data)) end)
+                    end
+                end
+            end
+        end
+    end)
+end
+
 -- ════════════════════════════════════════════════════════════════
 --  SELF-INSTALL + TELEPORT PERSISTENCE
 --  On first run: saves this script as AutoWorldSwitch.lua in the
@@ -223,9 +248,12 @@ do
         task.wait(1.5)
 
         -- Store which world we just joined so RunCycle can skip
-        -- the joinWorld() call for it (we're already here)
+        -- the joinWorld() call for it (we're already here).
+        -- Also mark server-switch ONLY when there was a pending world —
+        -- this prevents auto-start when user manually runs from lobby.
         if pendingName ~= "" then
-            _G._MFRot_JoinedWorld = pendingName
+            _G._MFRot_JoinedWorld  = pendingName
+            _G._MFRot_ServerSwitch = true  -- real farm switch, safe to auto-resume
         end
 
         -- Remove lobby overlay — full GUI builds below
@@ -2405,22 +2433,37 @@ task.spawn(function()
     local all   = LoadAllSaves()
     local saved = all[currentPlayerName]
 
-    if not (saved and saved.autoResume == true) then
-        -- Normal load — GUI is already showing full size, user presses START
+    -- Only auto-resume if:
+    --   1. The save has autoResume=true (farm was running before switch), AND
+    --   2. This load came through a real server switch (lobby detection ran)
+    -- This prevents auto-starting on a fresh manual execution even if old
+    -- save data has autoResume=true left over from a previous session.
+    local cameFromSwitch = (_G._MFRot_ServerSwitch == true)
+    _G._MFRot_ServerSwitch = nil  -- consume flag
+
+    if not (saved and saved.autoResume == true and cameFromSwitch) then
+        -- Normal/fresh load — GUI shows full size, user configures and presses START
+        -- Clear any stale autoResume so next manual run is also clean
+        if saved and saved.autoResume then
+            ClearAutoResume()
+        end
         print("[MFRot v1.0] Ready — press START to begin.")
         return
     end
 
-    -- ── Auto-resume path ─────────────────────────────────────────
-    print("[MFRot v1.0] autoResume detected — restoring state...")
+    -- ── Auto-resume path (came from server switch with active farm) ──
+    print("[MFRot v1.0] Server switch detected — resuming farm...")
 
-    -- Minimize the GUI so it stays out of the way while farming
-    isMinimized = true
+    -- Show GUI full size briefly so user sees it loading, then minimize.
+    -- Minimized = title bar only (360 x 36px) pinned to top-left corner.
     if main then
-        main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_MIN)
+        main.Visible  = true
+        main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_FULL)  -- full size first
+        main.Position = UDim2.new(0, 8, 0, 8)               -- top-left corner
     end
-    if scroll then scroll.Visible = false end
-    if minBtn then minBtn.Text = "+" end
+    if scroll then scroll.Visible = true end
+    if minBtn  then minBtn.Text   = "-" end
+    isMinimized = false
 
     -- Apply saved state into all live variables
     ApplyPlayerSave(currentPlayerName)
@@ -2480,6 +2523,19 @@ task.spawn(function()
         pauseBtn.Text             = "Pause"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
+
+    -- Let user see the GUI for 3 seconds, then minimize to title bar
+    task.spawn(function()
+        task.wait(3)
+        if isRunning and main and not inst.dead then
+            isMinimized   = true
+            main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_MIN)
+            main.Position = UDim2.new(0, 8, 0, 8)  -- top-left corner
+            if scroll then scroll.Visible = false end
+            if minBtn  then minBtn.Text   = "+" end
+        end
+    end)
+
     task.spawn(RunCycle)
 end)
 
