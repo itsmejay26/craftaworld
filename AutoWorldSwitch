@@ -35,22 +35,8 @@ local gui     = player:WaitForChild("PlayerGui")
 
 -- ════════════════════════════════════════════════════════════════
 --  LOBBY DETECTION
---  Runs before ANYTHING that needs world remotes.
---
---  In lobby:  RS has "tp" remote, no "Remotes" folder, no "Tiles"
---  In world:  RS has "Remotes" folder, workspace has "Tiles"
---
---  KEY INSIGHT: after tp:FireServer() the lobby server script dies
---  immediately — the player teleported to a new server. We must
---  NOT wait for worldLoaded() here. Just fire and return.
---  The autoexec will run fresh in the world server and handle the rest.
---
---  A small file (craftaworld/from_switch.txt) is written by joinWorld()
---  before every server exit. The world server reads it to know it came
---  from a farm switch and should auto-resume.
 -- ════════════════════════════════════════════════════════════════
 do
-    -- Wait up to 5s to determine lobby vs world
     local serverType = nil
     local deadline = tick() + 5
     while not serverType and tick() < deadline do
@@ -63,11 +49,9 @@ do
     end
 
     if serverType == "lobby" then
-        -- Destroy stale GUI from last session
         local oldGui = gui:FindFirstChild("MFRotGui")
         if oldGui then oldGui:Destroy() end
 
-        -- Read pending world
         local target = ""
         pcall(function()
             local c = readfile("craftaworld/pending_world.txt")
@@ -75,7 +59,6 @@ do
             if t and t ~= "" then target = t end
         end)
 
-        -- Show joining overlay
         local lobbyGui = Instance.new("ScreenGui", gui)
         lobbyGui.Name = "MFRot_LobbyGui"
         lobbyGui.ResetOnSpawn = false
@@ -107,7 +90,6 @@ do
         lbl2.TextXAlignment = Enum.TextXAlignment.Left
 
         if target ~= "" then
-            -- Wait for tp remote to be ready
             local tp = RS:FindFirstChild("tp")
             local tpDeadline = tick() + 10
             while not tp and tick() < tpDeadline do
@@ -120,24 +102,17 @@ do
                 print("[MFRot] Firing tp:FireServer(" .. target .. ")")
                 lbl2.Text = "Joining  " .. target .. "..."
                 pcall(function() tp:FireServer(target) end)
-                -- NOTE: if tp:FireServer is a Roblox teleport, this script
-                -- dies here and the world server's autoexec continues.
-                -- If it is in-game (same server), we fall through and wait.
             else
                 warn("[MFRot] tp remote not found in lobby")
                 lbl2.Text = "Error: tp remote not found"
             end
         end
 
-        -- Wait for Remotes to appear (signals we are inside a world).
-        -- If tp:FireServer caused a Roblox teleport this loop never runs
-        -- (script dies). If it is in-game, this loop waits until loaded.
         local waitDeadline = tick() + 120
         while tick() < waitDeadline do
             if RS:FindFirstChild("Remotes") then break end
             task.wait(0.4)
         end
-        -- Wait for Tiles to populate
         local tilesDeadline = tick() + 30
         while tick() < tilesDeadline do
             local tf = workspace:FindFirstChild("Tiles")
@@ -150,20 +125,16 @@ do
         task.wait(0.5)
         if lobbyGui and lobbyGui.Parent then lobbyGui:Destroy() end
     else
-        -- In a world — check from_switch.txt for auto-resume
-        -- from_switch.txt stores the world name written by joinWorld()
         local switchedWorld = ""
         pcall(function()
             if isfile and isfile("craftaworld/from_switch.txt") then
                 local raw = readfile("craftaworld/from_switch.txt")
                 local w = raw and raw:match("^%s*(.-)%s*$") or ""
                 if w ~= "" then switchedWorld = w end
-                writefile("craftaworld/from_switch.txt", "")  -- clear it
+                writefile("craftaworld/from_switch.txt", "")
             end
         end)
         if switchedWorld ~= "" then
-            -- Tell RunCycle which world we just arrived in
-            -- so it skips calling joinWorld() for this world
             _G._MFRot_JoinedWorld  = switchedWorld
             _G._MFRot_ServerSwitch = true
             print("[MFRot] Switched into world: " .. switchedWorld)
@@ -172,7 +143,7 @@ do
 end
 
 -- ════════════════════════════════════════════════════════════════
---  WORLD REMOTES (only reached when inside a world)
+--  WORLD REMOTES
 -- ════════════════════════════════════════════════════════════════
 local Remotes = RS:WaitForChild("Remotes")
 local placeR  = Remotes:WaitForChild("PlayerPlaceItem")
@@ -181,13 +152,11 @@ local fstR    = Remotes:WaitForChild("PlayerFist")
 local playerDropR, uiPromptR
 pcall(function() playerDropR = Remotes:WaitForChild("PlayerDrop", 10) end)
 pcall(function()
-    -- Try standard path first
     local mgr = RS:WaitForChild("Managers", 10)
     if mgr then
         local uim = mgr:WaitForChild("UIManager", 10)
         if uim then uiPromptR = uim:WaitForChild("UIPromptEvent", 10) end
     end
-    -- Fallback: search RS for UIPromptEvent directly
     if not uiPromptR then
         for _, v in pairs(RS:GetDescendants()) do
             if v.Name == "UIPromptEvent" then uiPromptR = v; break end
@@ -210,29 +179,26 @@ if not invScroll then warn("[MFRot] invScroll not found"); return end
 --  CONSTANTS
 -- ════════════════════════════════════════════════════════════════
 local TILE_SIZE     = 4.5
-local BREAK_FLOOR_Y = 7          -- absolute floor; never break below
-local FARM_TOP_Y    = 59         -- highest harvestable row
-local FARM_BOT_Y    = 7          -- lowest harvestable row (Y7 is the last layer)
+local BREAK_FLOOR_Y = 7
+local FARM_TOP_Y    = 59
+local FARM_BOT_Y    = 7
 local TRAV_LEFT     = 0
 local TRAV_RIGHT    = 100
 local JMP_RIGHT     = 99
 local JMP_LEFT      = 1
-local JMP_HOLD_STD  = 0.65       -- seconds per jump hold during climb
-local MOV_REFRESH   = 10         -- re-press movement key every N seconds
-local PLANT_DELAY   = 0.75       -- miss-detect delay for planting
+local JMP_HOLD_STD  = 0.65
+local MOV_REFRESH   = 10
+local PLANT_DELAY   = 0.75
 
--- Breaking (PnB method — from Auto Fast PnB v2)
-local PNB_FIRE_SPD  = 0.01       -- place/fist fire interval
-local PNB_MAX_PLACE = 300        -- max place fires per place phase
-local PNB_MAX_BREAK = 1000       -- max fist fires per break phase
-local RESPAWN_WAIT  = 4          -- seconds to wait after respawn
-local JUMP_HOLD_PNB = 3          -- hold jump this many seconds before PnB
+local PNB_FIRE_SPD  = 0.01
+local PNB_MAX_PLACE = 300
+local PNB_MAX_BREAK = 1000
+local RESPAWN_WAIT  = 4
+local JUMP_HOLD_PNB = 3
 
--- Dropping (from 1-Line Auto Farm)
-local MAX_DROP      = 200        -- max amount per single drop fire
-local DROP_COOLDOWN = 1          -- cooldown between batches
+local MAX_DROP      = 200
+local DROP_COOLDOWN = 1
 
--- World system
 local DATA_FOLDER   = "craftaworld"
 local DATA_FILE     = "craftaworld/pending_world.txt"
 local SAVE_FILE     = "MFRot_SaveData.json"
@@ -243,37 +209,31 @@ local WL_FILE       = "MFRot_Whitelist.json"
 -- ════════════════════════════════════════════════════════════════
 local isRunning        = false
 local isPaused         = false
-local currentPhase     = "idle"   -- idle|harvesting|breaking|planting|going_storage|dropping|going_farm
-local currentWorldIdx  = 1        -- index into worldList currently farming
-local currentRowY      = FARM_TOP_Y   -- Y row currently being processed
+local currentPhase     = "idle"
+local currentWorldIdx  = 1
+local currentRowY      = FARM_TOP_Y
 local cycleCount       = 0
 
--- Configured by GUI
-local worldList        = {}       -- {"worldA","worldB",...} farm worlds
-local storageWorld     = ""       -- world name to drop in
-local startWorldIdx    = 1        -- which index to start from (default first)
-local growTime         = 75360    -- 20h 56m = 75360 seconds
+local worldList        = {}
+local storageWorld     = ""
+local startWorldIdx    = 1
+local growTime         = 75360
 
 local CFG = {
-    plantItem    = nil,   -- session integer code (from GetCode)
+    plantItem    = nil,
     breakItem    = nil,
     dropItem     = nil,
-    -- Raw slot fingerprints (image asset ID + colors) — stable across sessions
-    -- These are set immediately when the user presses APPLY and saved to file.
-    -- Never derived from inventory at save-time (avoids nil if item not in bag).
     plantItemKey = nil,
     breakItemKey = nil,
     dropItemKey  = nil,
 }
 
--- Resume
 local resumeEnabled    = false
-local resumeTarget     = nil      -- player name; nil = use current player
+local resumeTarget     = nil
 
 local currentPlayerName = player.Name
 
--- GUI refs set later
-local statusLabel = nil  -- exposed as _G._MFRot_StatusLabel after GUI builds
+local statusLabel = nil
 local pauseBtn    = nil
 local isMinimized = false
 local lastSelSlot = nil
@@ -320,12 +280,11 @@ local function EnsureDefault()
 end
 LoadWL(); EnsureDefault()
 
--- Safe mode flags (both ON by default as requested)
 local safeAutoStop  = true
 local safeAutoLeave = true
 
 -- ════════════════════════════════════════════════════════════════
---  SLOT / ITEM HELPERS  (identical logic to RotFarm v3.1)
+--  SLOT / ITEM HELPERS
 -- ════════════════════════════════════════════════════════════════
 local scMap, scNext = {}, 10
 local function GetCode(k)
@@ -398,7 +357,7 @@ local function ResolveItemKey(code)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  SAVE / LOAD  (per-player, saves everything)
+--  SAVE / LOAD
 -- ════════════════════════════════════════════════════════════════
 local function LoadAllSaves()
     local ok, d = pcall(function()
@@ -414,8 +373,6 @@ local function WriteAllSaves(d)
     end)
 end
 
--- SaveProgress: sync=true means it blocks until written (use before world switches).
--- sync=false (default) runs async so it never blocks the farm loop.
 local function SaveProgress(autoResume, sync)
     local function doSave()
         pcall(function()
@@ -435,9 +392,6 @@ local function SaveProgress(autoResume, sync)
                 safeAutoStop     = safeAutoStop,
                 safeAutoLeave    = safeAutoLeave,
                 whitelist        = wlCopy,
-                -- Use the stored raw keys — set when user pressed APPLY.
-                -- Never derived from inventory at save-time so they are
-                -- always correct even when the item bag is empty.
                 plantItemKey     = CFG.plantItemKey or ResolveItemKey(CFG.plantItem),
                 breakItemKey     = CFG.breakItemKey or ResolveItemKey(CFG.breakItem),
                 dropItemKey      = CFG.dropItemKey  or ResolveItemKey(CFG.dropItem),
@@ -448,11 +402,7 @@ local function SaveProgress(autoResume, sync)
             WriteAllSaves(all)
         end)
     end
-    if sync then
-        doSave()  -- blocks until written
-    else
-        task.spawn(doSave)
-    end
+    if sync then doSave() else task.spawn(doSave) end
 end
 
 local function ClearAutoResume()
@@ -467,7 +417,6 @@ local function ClearAutoResume()
     end)
 end
 
--- Applies a saved record into live state; returns the record or nil
 local function ApplyPlayerSave(username)
     local all = LoadAllSaves()
     local d = all[username]; if not d then return nil end
@@ -486,7 +435,6 @@ local function ApplyPlayerSave(username)
         for _, v in ipairs(d.whitelist) do table.insert(whitelist, v) end
         EnsureDefault(); SaveWL()
     end
-    -- Restore raw keys AND register them in scMap so FindSlotByCode works
     if d.plantItemKey then
         CFG.plantItemKey = d.plantItemKey
         CFG.plantItem    = GetCode(d.plantItemKey)
@@ -506,30 +454,17 @@ local function ApplyPlayerSave(username)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  WORLD SWITCHING  (craftaworld/pending_world.txt system)
---  Mirrors JoinWorld.lua — used by the rotation at runtime.
+--  WORLD SWITCHING
 -- ════════════════════════════════════════════════════════════════
 local function isInLobby()
     return RS:FindFirstChild("tp") ~= nil
 end
 
---[[
-    joinWorld(worldName)
-    ─────────────────────────────────────────────────────────────
-    1. Write worldName to craftaworld/pending_world.txt
-    2. If in lobby  → fire tp:FireServer(worldName) directly
-    3. If in world  → call RequestPlayerExitWorld:InvokeServer()
-                      The auto-execute AutoWorldSwitch.lua script
-                      will read the file on next load and rejoin.
-]]
 local function joinWorld(worldName)
     if not worldName or worldName == "" then return end
     SetStatus("SWITCH → " .. worldName, Color3.fromRGB(180, 180, 255))
     pcall(makefolder, DATA_FOLDER)
-    -- Write target so the lobby server knows which world to join
     pcall(function() writefile(DATA_FILE, worldName) end)
-    -- Write the world NAME into from_switch.txt so the world server
-    -- can set _G._MFRot_JoinedWorld correctly on next load
     pcall(function()
         makefolder("craftaworld")
         writefile("craftaworld/from_switch.txt", worldName)
@@ -549,8 +484,7 @@ local function joinWorld(worldName)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  WORLD TILE WATCHER  (event-driven SurfaceGui ImageLabel tracker)
---  Identical system used in RotFarm v3.1 and Auto Fast PnB v2.
+--  WORLD TILE WATCHER
 -- ════════════════════════════════════════════════════════════════
 local worldTileSet = {}
 local function wTE(pX, pY) return worldTileSet[pX..","..pY] == true end
@@ -710,7 +644,7 @@ local function GetTileIndex()
 end
 
 -- ════════════════════════════════════════════════════════════════
---  ROW LAYOUT  — full layer Y59 → Y9, every 2 units
+--  ROW LAYOUT
 -- ════════════════════════════════════════════════════════════════
 local function getAllRows()
     local rows = {}
@@ -723,9 +657,8 @@ local function getAllRows()
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 2 · MOVEMENT HELPERS
+--  MOVEMENT HELPERS
 -- ════════════════════════════════════════════════════════════════
-
 local function pressKey(k)    VIM:SendKeyEvent(true,  k, false, game) end
 local function releaseKey(k)  VIM:SendKeyEvent(false, k, false, game) end
 local function startMoveRight() releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D) end
@@ -736,7 +669,6 @@ local function stopAll()
     pcall(function() releaseKey(Enum.KeyCode.Space) end)
 end
 
--- Walk horizontally to a tile X, refreshing the keypress every MOV_REFRESH seconds.
 local function walkToX(targetX, guardFn)
     local ix = GetTileIndex()
     if not ix or not guardFn() then return false end
@@ -756,7 +688,6 @@ local function walkToX(targetX, guardFn)
     return guardFn()
 end
 
--- Climb up to targetY by walking to the nearest wall and repeatedly jumping.
 local function climbToY(targetY, guardFn)
     local ix, iy = GetTileIndex(); if not ix or not iy then return nil, nil end
     if iy >= targetY then return ix, ix >= 50 end
@@ -790,7 +721,6 @@ local function climbToY(targetY, guardFn)
     ix, iy = GetTileIndex(); return ix, useRight
 end
 
--- Descend to targetY by walking off the nearest edge and falling.
 local function descendToY(targetY, guardFn)
     local ix, iy = GetTileIndex(); if not ix or not iy then return end
     if iy <= targetY then return end
@@ -813,7 +743,6 @@ local function descendToY(targetY, guardFn)
     releaseKey(fallKey); stopAll()
 end
 
--- Navigate to targetY whether above or below current position.
 local function goToRowY(targetY, guardFn)
     local _, iy = GetTileIndex(); if not iy then return end
     if iy < targetY then
@@ -824,36 +753,27 @@ local function goToRowY(targetY, guardFn)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 2 · HARVEST  (Full layer Y=59 → Y=9, every row)
+--  HARVEST
 --
---  Strategy (adapted from RotFarm v3.1 miss-detection system):
---    For each row from top (Y=59) to bottom (Y=9):
---      1. Walk left to X=1
---      2. Sweep RIGHT  — fire fstR at (ix, rowY) using wTE guard
---      3. Sweep LEFT   — fire fstR at (ix, rowY) for miss-cleanup
---      4. Fall naturally to next row (walk off right edge)
---    Final row: fall all the way to BREAK_FLOOR_Y
+--  Per-row strategy (top Y=59 → bottom Y=7, step -2):
+--
+--    FORWARD SWEEP  →  X1 to X99:  fire fstR at (ix, rowY)
+--    REVERSE SWEEP  ←  X99 to X1:  fire fstR at (ix, belowY=rowY-2)
+--      • We harvest the current row going right, then walk back left
+--        while simultaneously breaking the row below so its drops
+--        are ready when we land there.
+--    FALL  →  walk off left edge (X=0) → land on belowY (next row)
+--
+--  Wrong-layer recovery (applies to both sweeps):
+--    If player falls to the wrong layer mid-sweep:
+--      • Left side  (ix ≤ 50) → walk to X=1,  climb to rowY
+--      • Right side (ix > 50) → walk to X=99, climb to rowY
+--      • Walk back to the X position where the fall occurred
+--      • Resume the sweep in the original direction
+--
+--  Last row (Y=7):
+--    Forward sweep only — no belowY exists — then fall to break floor.
 -- ════════════════════════════════════════════════════════════════
--- handleBoundary: exact port from RotFarm v3.1
--- isRight=true  → at right side, reverse to A to walk off left edge
--- isRight=false → at left side, reverse to D to walk off right edge
-local function handleBoundary(isRight, guardFn, refY)
-    local _,ySaved=GetTileIndex()
-    if isRight then releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.A)
-    else releaseKey(Enum.KeyCode.A); task.wait(0.01); pressKey(Enum.KeyCode.D) end
-    local ft=tick()
-    while guardFn() and not inst.dead do
-        local _,yN=GetTileIndex()
-        if yN and ySaved and yN~=ySaved then
-            local t=yN; if refY and (refY-t)%2~=0 then t=t-1 end; stopAll()
-            if t<=BREAK_FLOOR_Y then return "last",ySaved end; return "fell",t
-        end
-        if tick()-ft>=0.45 then stopAll(); return "last",ySaved end
-        task.wait(0.01)
-    end
-    stopAll(); return "stopped",ySaved
-end
-
 local function RunHarvest(guardFn, resumeRowY)
     if _G._MFRot_SkipHarvest then
         _G._MFRot_SkipHarvest = nil
@@ -863,8 +783,7 @@ local function RunHarvest(guardFn, resumeRowY)
 
     fullScan(); ensureWatching()
 
-    local HARVEST_MISS_DELAY = 0.65
-    local rows = getAllRows()
+    local rows = getAllRows()   -- {59, 57, 55, … 9, 7}
 
     local startIdx = 1
     if resumeRowY then
@@ -873,61 +792,23 @@ local function RunHarvest(guardFn, resumeRowY)
         end
     end
 
-    local hPending = {}
-    local hIgnored = {}
-    local function hIsIgn(x, y) return hIgnored[x..","..y] == true end
-    local function hIgn(x, y)   hIgnored[x..","..y] = true end
-    local function hClearPending() hPending = {} end
-
-    local function hFire(ix, targetY)
-        if ix >= 1 and ix < 99 and wTE(ix, targetY) and not hIsIgn(ix, targetY) then
-            fstR:FireServer(Vector2.new(ix, targetY))
-            for _, p in ipairs(hPending) do
-                if p.x == ix and p.y == targetY then return end
-            end
-            table.insert(hPending, {x=ix, y=targetY, timestamp=tick()})
+    -- ── Climb helper: uses the wall on the player's current side ──
+    -- Left side  (ix ≤ 50) → walk to X=1  then climbToY
+    -- Right side (ix > 50) → walk to X=99 then climbToY
+    local function climbFromCurrentSide(targetY, gFn)
+        local ix = GetTileIndex()
+        if not ix then return false end
+        if ix <= 50 then
+            walkToX(JMP_LEFT, gFn)
+        else
+            walkToX(JMP_RIGHT, gFn)
         end
-    end
-
-    local function getMiss()
-        local now = tick()
-        for i = #hPending, 1, -1 do
-            local p = hPending[i]
-            if now - p.timestamp >= HARVEST_MISS_DELAY then
-                table.remove(hPending, i)
-                if not wTE(p.x, p.y) then
-                    hIgn(p.x, p.y)
-                elseif not hIsIgn(p.x, p.y) then
-                    return p.x, p.y
-                end
-            end
-        end
-        return nil, nil
-    end
-
-    local function fixMiss(missX, missY, resumeX, resumeRowY2, gFn)
-        stopAll(); SetStatus("H-MISS X="..missX, Color3.fromRGB(255,130,50))
-        local _, cy = GetTileIndex()
-        if cy and cy < resumeRowY2 then
-            climbToY(resumeRowY2, gFn)
-            if not gFn() then return false end
-            resumeX = GetTileIndex()
-        end
-        walkToX(missX, gFn)
         if not gFn() then return false end
-        for _ = 1, 4 do
-            if wTE(missX, missY) then fstR:FireServer(Vector2.new(missX, missY)) end
-            task.wait(0.05)
-        end
-        hIgn(missX, missY)
-        if not gFn() then return false end
-        if resumeX then
-            walkToX(resumeX, gFn)
-            if not gFn() then return false end
-        end
-        return true
+        climbToY(targetY, gFn)
+        return gFn()
     end
 
+    -- ── Initial position ─────────────────────────────────────────
     local _, startIy = GetTileIndex()
     if not startIy or math.abs(startIy - rows[startIdx]) > 1 then
         goToRowY(rows[startIdx], guardFn)
@@ -938,208 +819,192 @@ local function RunHarvest(guardFn, resumeRowY)
 
     for ri = startIdx, #rows do
         if _G._MFRot_SkipHarvest then
-            _G._MFRot_SkipHarvest = nil
-            stopAll()
+            _G._MFRot_SkipHarvest = nil; stopAll()
             SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
             task.wait(0.3); return true
         end
         if not guardFn() then return false end
 
-        local rowY  = rows[ri]
-        currentRowY = rowY
-        local isFirst = (ri == startIdx)
-        local isLast  = (ri == #rows)
-        local belowY  = rowY - 2
-        local lr
+        local rowY   = rows[ri]
+        local belowY = rowY - 2
+        local isLast = (ri == #rows)   -- Y=7, no layer below
+        currentRowY  = rowY
 
+        -- ── LAYER VERIFICATION (unconditional before every sweep) ─
+        -- After any natural fall the player may land slightly off.
+        -- Always confirm we are on rowY before starting the sweep.
         local _, curY = GetTileIndex()
-        if curY and math.abs(curY - rowY) > 1 then
-            goToRowY(rowY, guardFn)
+        if not curY or curY ~= rowY then
+            if curY and curY > rowY then
+                descendToY(rowY, guardFn)
+            else
+                SetStatus("LAYER FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                climbFromCurrentSide(rowY, guardFn)
+            end
             if not guardFn() then return false end
         end
         walkToX(JMP_LEFT, guardFn)
         if not guardFn() then return false end
 
-        if isFirst and not isLast then
-            -- Row 1: X1→X99 fire rowY, then X99→X0 fire belowY (fall off left)
-            hClearPending()
-            SetStatus("HARVEST "..ri.."/"..#rows.." → Y="..rowY, Color3.fromRGB(255,200,80))
-            lr = tick(); startMoveRight()
-            while guardFn() do
-                if _G._MFRot_SkipHarvest then stopAll(); break end
-                local ix, iy2 = GetTileIndex()
-                if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then
-                    stopAll()
-                    climbToY(rowY, guardFn)
-                    if not guardFn() then return false end
-                    walkToX(JMP_LEFT, guardFn)
-                    if not guardFn() then return false end
-                    lr = tick(); startMoveRight(); continue
-                end
-                if ix >= JMP_RIGHT then stopAll(); break end
-                local mX, mY = getMiss()
-                if mX then
-                    local rx = GetTileIndex()
-                    if not fixMiss(mX, mY, rx, rowY, guardFn) then return false end
-                    lr = tick(); startMoveRight(); continue
-                end
-                if tick() - lr >= MOV_REFRESH then startMoveRight(); lr = tick() end
-                hFire(ix, rowY)
-                task.wait(0.01)
-            end
-            if _G._MFRot_SkipHarvest then
-                _G._MFRot_SkipHarvest = nil; stopAll()
-                SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
-                task.wait(0.3); return true
-            end
-            stopAll()
-            if not guardFn() then return false end
+        -- ══════════════════════════════════════════════════════════
+        --  FORWARD SWEEP  X1 → X99  (fire at rowY)
+        -- ══════════════════════════════════════════════════════════
+        SetStatus("HARVEST "..ri.."/"..#rows.." → Y="..rowY, Color3.fromRGB(255,200,80))
+        local lr = tick()
+        startMoveRight()
 
-            -- X99→X0 fire belowY, fall off left edge to row 2
-            hClearPending()
-            SetStatus("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY, Color3.fromRGB(220,160,60))
-            lr = tick(); startMoveLeft()
-            local fellEarlyP2 = false
-            while guardFn() do
-                if _G._MFRot_SkipHarvest then stopAll(); break end
-                local ix, iy2 = GetTileIndex()
-                if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then
-                    if ix <= 3 then break end
-                    fellEarlyP2 = true; stopAll(); break
-                end
-                if ix <= TRAV_LEFT then stopAll(); break end
-                local mX, mY = getMiss()
-                if mX then
-                    local rx = GetTileIndex()
-                    if not fixMiss(mX, mY, rx, rowY, guardFn) then return false end
-                    lr = tick(); startMoveLeft(); continue
-                end
-                if tick() - lr >= MOV_REFRESH then startMoveLeft(); lr = tick() end
-                if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
-                task.wait(0.01)
-            end
-            if _G._MFRot_SkipHarvest then
-                _G._MFRot_SkipHarvest = nil; stopAll()
-                SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
-                task.wait(0.3); return true
-            end
-            stopAll()
-            if not guardFn() then return false end
+        while guardFn() do
+            if _G._MFRot_SkipHarvest then stopAll(); break end
+            local ix, iy = GetTileIndex()
+            if not ix then task.wait(0.01); continue end
 
-            -- If fell off early mid-sweep, climb back and redo the belowY pass from right
-            if fellEarlyP2 then
-                climbToY(rowY, guardFn); if not guardFn() then return false end
-                walkToX(JMP_RIGHT, guardFn); if not guardFn() then return false end
-                SetStatus("H-REDO BLW← Y="..belowY, Color3.fromRGB(220,130,50))
-                hClearPending()
-                lr = tick(); startMoveLeft()
-                while guardFn() do
-                    local ix, iy2 = GetTileIndex()
-                    if not ix then task.wait(0.01); continue end
-                    if iy2 and iy2 < rowY then stopAll(); break end
-                    if ix <= TRAV_LEFT then stopAll(); break end
-                    local mX, mY = getMiss()
-                    if mX then
-                        local rx = GetTileIndex()
-                        if not fixMiss(mX, mY, rx, rowY, guardFn) then return false end
-                        lr = tick(); startMoveLeft(); continue
-                    end
-                    if tick() - lr >= MOV_REFRESH then startMoveLeft(); lr = tick() end
-                    if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
-                    task.wait(0.01)
-                end
+            -- Wrong layer: fell during forward sweep
+            if iy and iy ~= rowY then
                 stopAll()
+                local savedX = ix   -- remember X so we can resume from here
+                SetStatus("FWD FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                climbFromCurrentSide(rowY, guardFn)
                 if not guardFn() then return false end
+                walkToX(savedX, guardFn)
+                if not guardFn() then return false end
+                lr = tick(); startMoveRight(); continue
             end
-            task.wait(0.1)
 
-        elseif isLast then
-            -- Last row: X1→X99 collect any remaining
-            hClearPending()
-            SetStatus("COLLECT "..ri.."/"..#rows.." → Y="..rowY, Color3.fromRGB(80,220,255))
-            lr = tick(); startMoveRight()
-            while guardFn() do
-                local ix, iy2 = GetTileIndex()
-                if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then
-                    stopAll()
-                    local side = (ix <= 50) and JMP_LEFT or JMP_RIGHT
-                    walkToX(side, guardFn)
-                    if not guardFn() then return false end
-                    climbToY(rowY, guardFn)
-                    if not guardFn() then return false end
-                    lr = tick(); startMoveRight(); continue
-                end
-                if ix >= JMP_RIGHT then stopAll(); break end
-                if tick() - lr >= MOV_REFRESH then startMoveRight(); lr = tick() end
-                if wTE(ix, rowY) then fstR:FireServer(Vector2.new(ix, rowY)) end
-                task.wait(0.01)
+            if ix >= JMP_RIGHT then stopAll(); break end
+
+            if wTE(ix, rowY) then
+                fstR:FireServer(Vector2.new(ix, rowY))
             end
-            stopAll()
-            if not guardFn() then return false end
 
-            -- Fall to break floor
+            if tick() - lr >= MOV_REFRESH then startMoveRight(); lr = tick() end
+            task.wait(0.01)
+        end
+
+        if _G._MFRot_SkipHarvest then
+            _G._MFRot_SkipHarvest = nil; stopAll()
+            SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
+            task.wait(0.3); return true
+        end
+        stopAll()
+        if not guardFn() then return false end
+
+        -- ══════════════════════════════════════════════════════════
+        --  LAST ROW  →  fall to break floor, harvest complete
+        -- ══════════════════════════════════════════════════════════
+        if isLast then
             SetStatus("→ BREAK FLOOR", Color3.fromRGB(255,100,80))
             walkToX(TRAV_RIGHT, guardFn)
             if not guardFn() then return false end
-            lr = tick(); pressKey(Enum.KeyCode.D)
+            local lr2 = tick(); pressKey(Enum.KeyCode.D)
             while guardFn() do
                 local _, iy2 = GetTileIndex()
                 if iy2 and iy2 <= BREAK_FLOOR_Y then
                     releaseKey(Enum.KeyCode.D); stopAll(); task.wait(0.15); break
                 end
-                if tick() - lr >= MOV_REFRESH then
-                    releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D); lr = tick()
+                if tick() - lr2 >= MOV_REFRESH then
+                    releaseKey(Enum.KeyCode.D); task.wait(0.01)
+                    pressKey(Enum.KeyCode.D); lr2 = tick()
                 end
                 task.wait(0.01)
             end
             releaseKey(Enum.KeyCode.D); stopAll()
             if not guardFn() then return false end
+            break
+        end
 
-        else
-            -- Middle rows: X1→X100 fire belowY, fall off right edge to next row
-            hClearPending()
-            SetStatus("HARVEST "..ri.."/"..#rows.." → belowY="..belowY, Color3.fromRGB(220,160,60))
-            lr = tick(); startMoveRight()
-            while guardFn() do
-                if _G._MFRot_SkipHarvest then stopAll(); break end
-                local ix, iy2 = GetTileIndex()
-                if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then
-                    if ix >= TRAV_RIGHT - 2 then stopAll(); break end
-                    local fallX = ix
-                    stopAll(); climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(fallX, guardFn); if not guardFn() then return false end
-                    lr = tick(); startMoveRight(); continue
-                end
-                if ix >= TRAV_RIGHT then stopAll(); break end
-                local mX, mY = getMiss()
-                if mX then
-                    local rx = GetTileIndex()
-                    if not fixMiss(mX, mY, rx, rowY, guardFn) then return false end
-                    lr = tick(); startMoveRight(); continue
-                end
-                if tick() - lr >= MOV_REFRESH then startMoveRight(); lr = tick() end
-                if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
-                task.wait(0.01)
+        -- ══════════════════════════════════════════════════════════
+        --  REVERSE SWEEP  X99 → X1  (fire at belowY)
+        --
+        --  While walking back left to collect the current-row drops
+        --  we simultaneously break every tile on the row below.
+        --  When we land on belowY next iteration its drops are
+        --  already sitting on the floor — saving a full extra pass.
+        -- ══════════════════════════════════════════════════════════
+        SetStatus("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY, Color3.fromRGB(220,160,60))
+        lr = tick()
+        startMoveLeft()
+
+        while guardFn() do
+            if _G._MFRot_SkipHarvest then stopAll(); break end
+            local ix, iy = GetTileIndex()
+            if not ix then task.wait(0.01); continue end
+
+            -- Wrong layer: fell during reverse sweep
+            if iy and iy ~= rowY then
+                stopAll()
+                local savedX = ix   -- remember X so we can resume from here
+                SetStatus("REV FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                climbFromCurrentSide(rowY, guardFn)
+                if not guardFn() then return false end
+                walkToX(savedX, guardFn)
+                if not guardFn() then return false end
+                lr = tick(); startMoveLeft(); continue
             end
-            if _G._MFRot_SkipHarvest then
-                _G._MFRot_SkipHarvest = nil; stopAll()
-                SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
-                task.wait(0.3); return true
+
+            if ix <= JMP_LEFT then stopAll(); break end
+
+            -- belowY >= FARM_BOT_Y is always true here (last row is
+            -- handled above), but guard anyway for safety.
+            if belowY >= FARM_BOT_Y and wTE(ix, belowY) then
+                fstR:FireServer(Vector2.new(ix, belowY))
             end
-            stopAll()
+
+            if tick() - lr >= MOV_REFRESH then startMoveLeft(); lr = tick() end
+            task.wait(0.01)
+        end
+
+        if _G._MFRot_SkipHarvest then
+            _G._MFRot_SkipHarvest = nil; stopAll()
+            SetStatus("TEST: Harvest skipped", Color3.fromRGB(200,200,100))
+            task.wait(0.3); return true
+        end
+        stopAll()
+        if not guardFn() then return false end
+
+        -- ══════════════════════════════════════════════════════════
+        --  FALL TO NEXT ROW
+        --
+        --  Player is at X≈1 after reverse sweep.
+        --  Press A (left) to walk off the left platform edge (X=0).
+        --  Gravity drops the player to belowY.
+        --  The next iteration's forward sweep then starts from X=1
+        --  moving right — a natural "immediately reverse" direction.
+        -- ══════════════════════════════════════════════════════════
+        SetStatus("HARVEST "..ri.."/"..#rows.." ↓ Y="..belowY, Color3.fromRGB(200,180,60))
+        local lr3 = tick()
+        pressKey(Enum.KeyCode.A)
+        while guardFn() do
+            local _, iy2 = GetTileIndex()
+            if iy2 and iy2 ~= rowY then
+                -- Y changed → we've fallen off the edge
+                releaseKey(Enum.KeyCode.A); stopAll(); break
+            end
+            if tick() - lr3 >= MOV_REFRESH then
+                releaseKey(Enum.KeyCode.A); task.wait(0.01)
+                pressKey(Enum.KeyCode.A); lr3 = tick()
+            end
+            task.wait(0.01)
+        end
+        releaseKey(Enum.KeyCode.A); stopAll()
+        if not guardFn() then return false end
+        task.wait(0.15)   -- let physics settle
+
+        -- Post-fall layer check: if we overshot (landed below belowY)
+        -- climb back up. The unconditional layer check at the top of
+        -- the next iteration is the final safety net.
+        local _, landY = GetTileIndex()
+        if landY and landY < belowY then
+            SetStatus("FALL FIX ↑ Y="..belowY, Color3.fromRGB(255,160,60))
+            climbFromCurrentSide(belowY, guardFn)
             if not guardFn() then return false end
-            task.wait(0.1)
         end
     end
 
     return guardFn()
 end
+
 -- ════════════════════════════════════════════════════════════════
---  STEP 2 · PLANT  (Full layer Y=7 → Y=59, bottom to top)
+--  PLANT
 -- ════════════════════════════════════════════════════════════════
 local function RunPlant(guardFn, resumeRowY)
     if _G._MFRot_SkipPlant then
@@ -1148,11 +1013,9 @@ local function RunPlant(guardFn, resumeRowY)
         task.wait(0.5); return true
     end
     ensureWatching()
-    local rows = getAllRows()   -- Y=59, 57 … 7 top-to-bottom
-    -- Plant bottom-to-top, so reverse
+    local rows = getAllRows()
     local plantRows = {}
     for i = #rows, 1, -1 do table.insert(plantRows, rows[i]) end
-    -- plantRows is now Y=7, 9, 11 … 59
 
     local startIdx = 1
     if resumeRowY then
@@ -1280,18 +1143,7 @@ local function RunPlant(guardFn, resumeRowY)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 3 · BREAK  (PnB method — from Auto Fast PnB v2.0)
---
---  Full sequence:
---    1. Respawn character (set HP to 0, wait for char to reload)
---    2. Wait RESPAWN_WAIT seconds
---    3. Hold Space for JUMP_HOLD_PNB seconds (lifts player to break height)
---    4. Get current tile (ix, iy) as the PnB target
---    5. If a block already exists at (ix, iy) → fist it clear first
---    6. PnB loop until CFG.breakItem inventory is empty:
---         Place  → wait for wTE confirmation
---         Fist   → wait for tile to clear
---         repeat
+--  BREAK  (PnB)
 -- ════════════════════════════════════════════════════════════════
 local function RunBreak(guardFn)
     if _G._MFRot_SkipBreak then
@@ -1304,24 +1156,20 @@ local function RunBreak(guardFn)
         return false
     end
 
-    -- ── ANTI-AFK: jump every 60s while break is running ─────────
     local breakRunning = true
     task.spawn(function()
         while breakRunning and guardFn() do
             task.wait(60)
             if not breakRunning or not guardFn() then break end
-            -- Brief jump so the game doesn't detect AFK
             pressKey(Enum.KeyCode.Space)
             task.wait(0.3)
             releaseKey(Enum.KeyCode.Space)
         end
     end)
 
-    -- ── 1. RESPAWN ───────────────────────────────────────────────
     SetStatus("BREAK: Respawning...", Color3.fromRGB(200, 160, 255))
     stopAll()
 
-    -- Kill the character to trigger respawn
     local char = player.Character
     if char then
         local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1330,7 +1178,6 @@ local function RunBreak(guardFn)
         end
     end
 
-    -- Wait for character to be fully replaced
     local respawnTimeout = tick() + 15
     repeat
         task.wait(0.2)
@@ -1342,11 +1189,9 @@ local function RunBreak(guardFn)
 
     if not guardFn() then return false end
 
-    -- Refresh HRP reference after respawn
     RefHRP()
-    task.wait(0.3)  -- small extra settle time
+    task.wait(0.3)
 
-    -- ── 2. WAIT AFTER RESPAWN ────────────────────────────────────
     SetStatus("BREAK: Settling " .. RESPAWN_WAIT .. "s...", Color3.fromRGB(200, 160, 255))
     local settleStart = tick()
     while guardFn() and tick() - settleStart < RESPAWN_WAIT do
@@ -1354,7 +1199,6 @@ local function RunBreak(guardFn)
     end
     if not guardFn() then return false end
 
-    -- ── 3. HOLD JUMP for JUMP_HOLD_PNB seconds ───────────────────
     SetStatus("BREAK: Jump hold " .. JUMP_HOLD_PNB .. "s...", Color3.fromRGB(180, 130, 255))
     pressKey(Enum.KeyCode.Space)
     local jumpStart = tick()
@@ -1363,9 +1207,8 @@ local function RunBreak(guardFn)
     end
     releaseKey(Enum.KeyCode.Space)
     if not guardFn() then return false end
-    task.wait(0.2)  -- let player land/settle at break height
+    task.wait(0.2)
 
-    -- ── 4. GET TARGET TILE ───────────────────────────────────────
     local ix, iy = GetTileIndex()
     if not ix or not iy then
         SetStatus("BREAK: Can't detect tile pos!", Color3.fromRGB(255, 80, 80))
@@ -1374,7 +1217,6 @@ local function RunBreak(guardFn)
     local targetPos = Vector2.new(ix, iy)
     SetStatus("BREAK: PnB at (" .. ix .. "," .. iy .. ")", Color3.fromRGB(85, 215, 110))
 
-    -- ── 5. CLEAR EXISTING BLOCK (if present) ────────────────────
     if wTE(ix, iy) then
         SetStatus("BREAK: Clearing existing block...", Color3.fromRGB(220, 150, 50))
         local clearFires = 0
@@ -1387,9 +1229,6 @@ local function RunBreak(guardFn)
         if not guardFn() then return false end
     end
 
-    -- ── 6. PnB LOOP ──────────────────────────────────────────────
-    --  Place until tile appears, then fist until tile clears.
-    --  Stop when breakItem inventory hits 0.
     local passNum = 0
     ensureWatching()
 
@@ -1400,7 +1239,6 @@ local function RunBreak(guardFn)
             SetStatus("TEST: Break skipped", Color3.fromRGB(200, 200, 100))
             task.wait(0.3); return true
         end
-        -- Check inventory
         local remaining = GetTotalByCode(CFG.breakItem)
         if remaining <= 0 then
             SetStatus("BREAK: Done — inventory empty", Color3.fromRGB(150, 255, 180))
@@ -1411,51 +1249,42 @@ local function RunBreak(guardFn)
         SetStatus("BREAK pass " .. passNum .. " | " .. remaining .. " left",
             Color3.fromRGB(85, 215, 110))
 
-        -- ── PLACE phase ──────────────────────────────────────────
         local placeFires = 0
         while guardFn() do
             if _G._MFRot_SkipBreak then stopAll(); break end
             local slotN = FindSlotByCode(CFG.breakItem)
             if not slotN then
-                -- Inventory empty mid-place — done
                 SetStatus("BREAK: Inventory empty (place)", Color3.fromRGB(150, 255, 180))
                 return guardFn()
             end
             placeR:FireServer(targetPos, slotN)
             task.wait(PNB_FIRE_SPD)
             placeFires += 1
-            if wTE(ix, iy) then break end                -- tile confirmed placed
-            if placeFires >= PNB_MAX_PLACE then break end -- safety cap
+            if wTE(ix, iy) then break end
+            if placeFires >= PNB_MAX_PLACE then break end
         end
         if not guardFn() then return false end
 
-        -- ── FIST phase ───────────────────────────────────────────
         local breakFires = 0
-        SetStatus("BREAK pass " .. passNum .. " | FIST",
-            Color3.fromRGB(220, 150, 50))
+        SetStatus("BREAK pass " .. passNum .. " | FIST", Color3.fromRGB(220, 150, 50))
         while guardFn() do
             if _G._MFRot_SkipBreak then stopAll(); break end
             fstR:FireServer(targetPos)
             task.wait(PNB_FIRE_SPD)
             breakFires += 1
-            if not wTE(ix, iy) then break end            -- tile confirmed cleared
-            if breakFires >= PNB_MAX_BREAK then break end -- safety cap
+            if not wTE(ix, iy) then break end
+            if breakFires >= PNB_MAX_BREAK then break end
         end
         if _G._MFRot_SkipBreak then _G._MFRot_SkipBreak=nil; breakRunning=false; SetStatus("TEST: Break skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
         if not guardFn() then return false end
     end
 
-    breakRunning = false  -- stop anti-AFK task
+    breakRunning = false
     return guardFn()
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 3 · DROP  (from 1-Line Auto Farm v1.3 pattern)
---
---  Drops ALL of CFG.dropItem from inventory.
---  Uses playerDropR:FireServer(slotN) then uiPromptR confirm.
---  Loops in MAX_DROP batches until inventory is 0.
---  Returns when inventory is clear.
+--  DROP
 -- ════════════════════════════════════════════════════════════════
 local function RunDrop(guardFn)
     if not CFG.dropItem then
@@ -1463,7 +1292,6 @@ local function RunDrop(guardFn)
         return false
     end
 
-    -- Wait for remotes if not loaded yet (storage world may be slow)
     if not playerDropR or not uiPromptR then
         SetStatus("DROP: Waiting for drop remotes...", Color3.fromRGB(220, 180, 80))
         local t = tick()
@@ -1493,7 +1321,7 @@ local function RunDrop(guardFn)
     if not playerDropR or not uiPromptR then
         SetStatus("DROP: Drop remotes not found — skipping drop", Color3.fromRGB(255, 80, 80))
         warn("[MFRot] playerDropR=" .. tostring(playerDropR) .. " uiPromptR=" .. tostring(uiPromptR))
-        return guardFn()  -- continue even if drop fails
+        return guardFn()
     end
 
     local total = GetTotalByCode(CFG.dropItem)
@@ -1507,7 +1335,7 @@ local function RunDrop(guardFn)
     local loopGuard = 0
     while guardFn() do
         loopGuard += 1
-        if loopGuard > 50 then break end  -- safety cap
+        if loopGuard > 50 then break end
 
         local remaining = GetTotalByCode(CFG.dropItem)
         if remaining <= 0 then
@@ -1525,7 +1353,6 @@ local function RunDrop(guardFn)
         SetStatus("DROP: " .. remaining .. " left, dropping " .. dropAmt .. "...",
             Color3.fromRGB(220, 200, 100))
 
-        -- Exact pattern from 1-Line Auto Farm v1.3
         pcall(function() playerDropR:FireServer(slotN) end)
         task.wait(0.3)
         pcall(function()
@@ -1551,20 +1378,17 @@ local function RunDrop(guardFn)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 3 · WORLD LOAD WAIT
---  After joinWorld(), wait until we're actually inside the world
---  (Tiles folder exists with children) before proceeding.
+--  WORLD LOAD WAIT
 -- ════════════════════════════════════════════════════════════════
 local function waitForWorldLoad(timeoutSecs)
     timeoutSecs = timeoutSecs or 60
     local deadline = tick() + timeoutSecs
     SetStatus("Waiting for world to load...", Color3.fromRGB(180, 180, 255))
     while tick() < deadline and not inst.dead do
-        -- We're loaded when: not in lobby AND Tiles folder has parts
         if not isInLobby() then
             local tf = workspace:FindFirstChild("Tiles")
             if tf and #tf:GetChildren() > 0 then
-                task.wait(1.5)  -- extra settle for tile watcher
+                task.wait(1.5)
                 return true
             end
         end
@@ -1575,19 +1399,9 @@ local function waitForWorldLoad(timeoutSecs)
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 3 · MAIN ROTATION LOOP
---
---  Flow per world:
---    joinWorld(farmWorld) → wait load
---    Harvest → Break → Plant
---    joinWorld(storageWorld) → wait load
---    Drop all
---    → next world → repeat
---
---  No grow wait (removed per user request).
+--  MAIN ROTATION LOOP
 -- ════════════════════════════════════════════════════════════════
 local function RunCycle()
-    -- ── Validation ───────────────────────────────────────────────
     if #worldList == 0 then
         SetStatus("Add at least 1 farm world!", Color3.fromRGB(255, 80, 80))
         isRunning = false; return
@@ -1609,7 +1423,6 @@ local function RunCycle()
         isRunning = false; return
     end
 
-    -- ── Resume: apply saved state ─────────────────────────────────
     if resumeEnabled then
         local targetName = resumeTarget or currentPlayerName
         local saved = ApplyPlayerSave(targetName)
@@ -1631,7 +1444,6 @@ local function RunCycle()
         currentRowY     = FARM_TOP_Y
     end
 
-    -- ── Guard: spin-wait while paused ────────────────────────────
     local function guard()
         if isPaused and isRunning and not inst.dead then
             stopAll()
@@ -1645,12 +1457,9 @@ local function RunCycle()
 
     cycleCount = 0
 
-    -- ── Main rotation ─────────────────────────────────────────────
     while guard() do
         cycleCount += 1
         local numWorlds = #worldList
-
-        -- Pick up at the right world index on resume (first cycle only)
         local loopStart = (cycleCount == 1) and currentWorldIdx or 1
 
         for wi = loopStart, numWorlds do
@@ -1658,9 +1467,6 @@ local function RunCycle()
             currentWorldIdx = wi
             local farmWorld  = worldList[wi]
 
-            -- ── On first cycle, determine which phases to skip based on
-            --    saved currentPhase (resume from mid-farm).
-            --    After cycle 1 always do all phases fresh.
             local resumeAtStorage = (cycleCount == 1) and
                 (currentPhase == "going_storage" or currentPhase == "dropping")
             local skipHarvest = (cycleCount == 1) and
@@ -1671,31 +1477,22 @@ local function RunCycle()
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
             local resumePlantY   = (cycleCount == 1 and skipBreak and not skipPlant) and currentRowY or nil
 
-            -- After the first world in cycle 1, clear all resume flags
             if cycleCount == 1 and wi > loopStart then
                 skipHarvest    = false; skipBreak = false; skipPlant = false
                 resumeAtStorage = false
                 resumeHarvestY = nil;   resumePlantY = nil
             end
 
-            -- ── STORAGE-RESUME SHORTCUT ──────────────────────────
-            -- If we saved in going_storage/dropping phase, skip joining
-            -- the farm world and go straight to drop, then advance to next world.
             local didStorageResume = false
             if resumeAtStorage then
-                -- We saved with currentWorldIdx=wi and phase="going_storage".
-                -- Just do the storage drop here. The for loop will naturally
-                -- advance to wi+1 on the next iteration to farm the next world.
                 local alreadyAtStorage2 = (_G._MFRot_JoinedWorld == storageWorld)
                 if alreadyAtStorage2 then
                     _G._MFRot_JoinedWorld = nil
-                    SetStatus("STORAGE (resume, already here) — DROP",
-                        Color3.fromRGB(150, 255, 180))
+                    SetStatus("STORAGE (resume, already here) — DROP", Color3.fromRGB(150, 255, 180))
                     stopWatching(); worldWatching = false
                     fullScan(); startWatching(); worldWatching = true
                 else
-                    SetStatus("RESUME → STORAGE " .. storageWorld,
-                        Color3.fromRGB(255, 220, 120))
+                    SetStatus("RESUME → STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
                     joinWorld(storageWorld)
                     if not waitForWorldLoad(90) then
                         joinWorld(storageWorld); waitForWorldLoad(60)
@@ -1706,165 +1503,138 @@ local function RunCycle()
                     SaveProgress(true, true)
                     SetStatus("STORAGE (resume) — DROP", Color3.fromRGB(255, 180, 60))
                     RunDrop(guard)
-                    -- Reset so subsequent worlds start fresh
                     currentRowY  = FARM_TOP_Y
                     currentPhase = "harvesting"
                 end
                 didStorageResume = true
-                -- After drop, clear resumeAtStorage so subsequent worlds
-                -- in this same for loop run their full harvest/break/plant
                 resumeAtStorage = false
             end
 
-            -- skipThisWorld = true when world load fails
             local skipThisWorld = false
 
             if not didStorageResume then
-            -- ── JOIN FARM WORLD ─────────────────────────────────
-            local alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
-            if alreadyHere then
-                _G._MFRot_JoinedWorld = nil
-                SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
-                    .. " (already here)", Color3.fromRGB(150, 255, 180))
-                SaveProgress(true)
-                stopWatching(); worldWatching = false
-                fullScan(); startWatching(); worldWatching = true
-            else
-                SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
-                    Color3.fromRGB(180, 180, 255))
-                -- FIX: save nextWorldIdx BEFORE exiting so resume
-                -- starts at this world (not wi+1) and re-harvests it
-                currentPhase    = "harvesting"
-                currentRowY     = FARM_TOP_Y
-                currentWorldIdx = wi
-                SaveProgress(true, true)  -- SYNC before server exit
-                joinWorld(farmWorld)
-                if not waitForWorldLoad(90) then
-                    SetStatus("⚠ Timeout: " .. farmWorld .. " — retry",
-                        Color3.fromRGB(255, 80, 80))
+                local alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
+                if alreadyHere then
+                    _G._MFRot_JoinedWorld = nil
+                    SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
+                        .. " (already here)", Color3.fromRGB(150, 255, 180))
+                    SaveProgress(true)
+                    stopWatching(); worldWatching = false
+                    fullScan(); startWatching(); worldWatching = true
+                else
+                    SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
+                        Color3.fromRGB(180, 180, 255))
+                    currentPhase    = "harvesting"
+                    currentRowY     = FARM_TOP_Y
+                    currentWorldIdx = wi
+                    SaveProgress(true, true)
                     joinWorld(farmWorld)
-                    if not waitForWorldLoad(60) then
-                        SetStatus("⚠ Failed: " .. farmWorld .. " — skipping",
-                            Color3.fromRGB(255, 80, 80))
-                        task.wait(3); skipThisWorld = true
+                    if not waitForWorldLoad(90) then
+                        SetStatus("⚠ Timeout: " .. farmWorld .. " — retry", Color3.fromRGB(255, 80, 80))
+                        joinWorld(farmWorld)
+                        if not waitForWorldLoad(60) then
+                            SetStatus("⚠ Failed: " .. farmWorld .. " — skipping", Color3.fromRGB(255, 80, 80))
+                            task.wait(3); skipThisWorld = true
+                        end
                     end
+                end
+
+                if not skipThisWorld then
+                    if not guard() then break end
+                    if not alreadyHere then
+                        stopWatching(); worldWatching = false
+                        fullScan(); startWatching(); worldWatching = true
+                    end
+
+                    if not skipHarvest then
+                        currentPhase = "harvesting"; SaveProgress(true)
+                        SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — HARVEST",
+                            Color3.fromRGB(255, 200, 80))
+                        local ok = RunHarvest(guard, resumeHarvestY)
+                        if not ok or not guard() then break end
+                        currentRowY = FARM_TOP_Y
+                    else
+                        SetStatus("RESUME: skip harvest", Color3.fromRGB(180, 200, 255))
+                        task.wait(0.3)
+                    end
+
+                    if not skipBreak then
+                        currentPhase = "breaking"; SaveProgress(true)
+                        SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
+                            Color3.fromRGB(220, 150, 50))
+                        local ok = RunBreak(guard)
+                        if not ok or not guard() then break end
+                    else
+                        SetStatus("RESUME: skip break", Color3.fromRGB(180, 200, 255))
+                        task.wait(0.3)
+                    end
+
+                    if not skipPlant then
+                        currentPhase = "planting"; SaveProgress(true)
+                        SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — PLANT",
+                            Color3.fromRGB(85, 215, 110))
+                        local ok = RunPlant(guard, resumePlantY)
+                        if not ok or not guard() then break end
+                    else
+                        SetStatus("RESUME: skip plant", Color3.fromRGB(180, 200, 255))
+                        task.wait(0.3)
+                    end
+
+                    currentWorldIdx = wi
+                    currentRowY     = FARM_TOP_Y
+                    currentPhase    = "going_storage"
+                    SaveProgress(true, true)
+
+                    local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
+                    if alreadyAtStorage then
+                        _G._MFRot_JoinedWorld = nil
+                        SetStatus("STORAGE " .. storageWorld .. " (already here)", Color3.fromRGB(150, 255, 180))
+                        stopWatching(); worldWatching = false
+                        fullScan(); startWatching(); worldWatching = true
+                    else
+                        SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
+                        joinWorld(storageWorld)
+                        if not waitForWorldLoad(90) then
+                            SetStatus("⚠ Storage timeout!", Color3.fromRGB(255, 80, 80))
+                            joinWorld(storageWorld); waitForWorldLoad(60)
+                        end
+                    end
+                    if not guard() then break end
+
+                    currentPhase = "dropping"; SaveProgress(true, true)
+                    SetStatus("STORAGE — DROP [world " .. wi .. "/" .. numWorlds .. "]",
+                        Color3.fromRGB(255, 180, 60))
+                    RunDrop(guard)
+                    if not guard() then break end
                 end
             end
+        end
 
-            if not skipThisWorld then
-                if not guard() then break end
-                if not alreadyHere then
-                    stopWatching(); worldWatching = false
-                    fullScan(); startWatching(); worldWatching = true
-                end
-
-                -- ── HARVEST ───────────────────────────────────────
-                if not skipHarvest then
-                    currentPhase = "harvesting"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — HARVEST",
-                        Color3.fromRGB(255, 200, 80))
-                    local ok = RunHarvest(guard, resumeHarvestY)
-                    if not ok or not guard() then break end
-                    -- FIX: reset after harvest so next load starts from top
-                    currentRowY = FARM_TOP_Y
-                else
-                    SetStatus("RESUME: skip harvest", Color3.fromRGB(180, 200, 255))
-                    task.wait(0.3)
-                end
-
-                -- ── BREAK ─────────────────────────────────────────
-                if not skipBreak then
-                    currentPhase = "breaking"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
-                        Color3.fromRGB(220, 150, 50))
-                    local ok = RunBreak(guard)
-                    if not ok or not guard() then break end
-                else
-                    SetStatus("RESUME: skip break", Color3.fromRGB(180, 200, 255))
-                    task.wait(0.3)
-                end
-
-                -- ── PLANT ─────────────────────────────────────────
-                if not skipPlant then
-                    currentPhase = "planting"; SaveProgress(true)
-                    SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — PLANT",
-                        Color3.fromRGB(85, 215, 110))
-                    local ok = RunPlant(guard, resumePlantY)
-                    if not ok or not guard() then break end
-                else
-                    SetStatus("RESUME: skip plant", Color3.fromRGB(180, 200, 255))
-                    task.wait(0.3)
-                end
-
-                -- ── JOIN STORAGE WORLD ────────────────────────────
-                -- Save currentWorldIdx = wi (NOT wi+1) so on resume
-                -- loopStart = wi and the loop re-enters at wi with
-                -- resumeAtStorage=true, drops, then continues to wi+1 naturally.
-                currentWorldIdx = wi
-                currentRowY     = FARM_TOP_Y
-                currentPhase    = "going_storage"
-                SaveProgress(true, true)  -- SYNC before server exit
-
-                local alreadyAtStorage = (_G._MFRot_JoinedWorld == storageWorld)
-                if alreadyAtStorage then
-                    _G._MFRot_JoinedWorld = nil
-                    SetStatus("STORAGE " .. storageWorld .. " (already here)",
-                        Color3.fromRGB(150, 255, 180))
-                    stopWatching(); worldWatching = false
-                    fullScan(); startWatching(); worldWatching = true
-                else
-                    SetStatus("→ STORAGE " .. storageWorld, Color3.fromRGB(255, 220, 120))
-                    joinWorld(storageWorld)
-                    if not waitForWorldLoad(90) then
-                        SetStatus("⚠ Storage timeout!", Color3.fromRGB(255, 80, 80))
-                        joinWorld(storageWorld); waitForWorldLoad(60)
-                    end
-                end
-                if not guard() then break end
-
-                -- ── DROP ALL ──────────────────────────────────────
-                currentPhase = "dropping"; SaveProgress(true, true)
-                SetStatus("STORAGE — DROP [world " .. wi .. "/" .. numWorlds .. "]",
-                    Color3.fromRGB(255, 180, 60))
-                RunDrop(guard)
-                if not guard() then break end
-            end -- skipThisWorld
-            end -- not didStorageResume
-        end -- world for loop
-
-        -- Full pass done — reset for next cycle
         currentWorldIdx = 1
         currentRowY     = FARM_TOP_Y
         currentPhase    = "harvesting"
-        SetStatus("CYCLE #" .. cycleCount .. " complete — restarting",
-            Color3.fromRGB(150, 255, 180))
+        SetStatus("CYCLE #" .. cycleCount .. " complete — restarting", Color3.fromRGB(150, 255, 180))
         task.wait(1)
-    end -- outer while
+    end
 
-    -- ── Cleanup ──────────────────────────────────────────────────
     isRunning = false; isPaused = false
     if pauseBtn then
         pauseBtn.Text = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
     stopAll()
-    ClearAutoResume()  -- farm ended normally; don't auto-restart next load
-    -- Don't set userStopped here — normal end should allow next auto-resume
+    ClearAutoResume()
     SetStatus("[ STOPPED ] Cycle complete", Color3.fromRGB(255, 100, 100))
 end
 
 -- ════════════════════════════════════════════════════════════════
---  STEP 4 · FULL GUI
---  Square window (360×360 visible area + 36px title bar = 396px)
---  Scrollable content, minimizable, draggable
+--  GUI
 -- ════════════════════════════════════════════════════════════════
-
-local WIN_SIZE  = 240          -- square: width = height of content area
-local WIN_TITLE = 28           -- title bar height
+local WIN_SIZE  = 240
+local WIN_TITLE = 28
 local WIN_FULL  = WIN_SIZE + WIN_TITLE
 local WIN_MIN   = WIN_TITLE
 
--- ── Destroy old GUI if re-executing ─────────────────────────────
 local oldSG = gui:FindFirstChild("MFRotGui")
 if oldSG then oldSG:Destroy() end
 
@@ -1874,7 +1644,6 @@ sg.ResetOnSpawn   = false
 sg.IgnoreGuiInset = true
 sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
--- ── Main window ──────────────────────────────────────────────────
 local main = Instance.new("Frame", sg)
 main.Name             = "Main"
 main.Size             = UDim2.new(0, WIN_SIZE, 0, WIN_FULL)
@@ -1887,7 +1656,6 @@ local mainStroke = Instance.new("UIStroke", main)
 mainStroke.Color     = Color3.fromRGB(55, 140, 70)
 mainStroke.Thickness = 1.5
 
--- ── GUI HELPER FUNCTIONS ─────────────────────────────────────────
 local function mkCorner(p, r)
     Instance.new("UICorner", p).CornerRadius = UDim.new(0, r or 6)
 end
@@ -1915,16 +1683,13 @@ local function mkLbl(par, txt, y, h, col, ts, font, xa)
     return l
 end
 
--- ── Drag ─────────────────────────────────────────────────────────
 local dragging, dragSt, dragPos = false, nil, nil
 local guiConns = {}
 local function addGC(c) table.insert(guiConns, c) end
 
--- ── Title bar ────────────────────────────────────────────────────
 local titleBar = mkFrame(main, Color3.fromRGB(24, 36, 28), 0, WIN_TITLE)
 titleBar.Size = UDim2.new(1, 0, 0, WIN_TITLE)
 mkCorner(titleBar, 10)
--- Bottom filler to square off the rounded bottom of titleBar
 local tbFill = mkFrame(titleBar, Color3.fromRGB(24, 36, 28), WIN_TITLE - 10, 10)
 tbFill.Size = UDim2.new(1, 0, 0, 10)
 
@@ -1933,7 +1698,6 @@ local titleLbl = mkLbl(titleBar, "⚙ Multi Farm Rotation v1.0", 0, WIN_TITLE,
 titleLbl.Position = UDim2.new(0, 10, 0, 0)
 titleLbl.Size     = UDim2.new(1, -46, 1, 0)
 
--- Minimize button
 local minBtn = Instance.new("TextButton", titleBar)
 minBtn.Size             = UDim2.new(0, 18, 0, 18)
 minBtn.Position         = UDim2.new(1, -40, 0.5, -9)
@@ -1945,7 +1709,6 @@ minBtn.TextSize         = 14
 minBtn.Font             = Enum.Font.GothamBold
 mkCorner(minBtn, 5)
 
--- Close button
 local closeBtn = Instance.new("TextButton", titleBar)
 closeBtn.Size             = UDim2.new(0, 18, 0, 18)
 closeBtn.Position         = UDim2.new(1, -20, 0.5, -9)
@@ -1957,7 +1720,6 @@ closeBtn.TextSize         = 13
 closeBtn.Font             = Enum.Font.GothamBold
 mkCorner(closeBtn, 5)
 
--- Drag on title bar
 titleBar.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1
     or i.UserInputType == Enum.UserInputType.Touch then
@@ -1980,7 +1742,6 @@ addGC(UIS.InputEnded:Connect(function(i)
     end
 end))
 
--- ── Scrollable content ───────────────────────────────────────────
 local scroll = Instance.new("ScrollingFrame", main)
 scroll.Size                = UDim2.new(1, 0, 1, -WIN_TITLE)
 scroll.Position            = UDim2.new(0, 0, 0, WIN_TITLE)
@@ -1989,7 +1750,7 @@ scroll.BorderSizePixel     = 0
 scroll.ScrollBarThickness  = 4
 scroll.ScrollBarImageColor3 = Color3.fromRGB(80, 150, 90)
 scroll.ScrollingDirection  = Enum.ScrollingDirection.Y
-scroll.CanvasSize          = UDim2.new(0, 0, 0, 0)  -- updated at end
+scroll.CanvasSize          = UDim2.new(0, 0, 0, 0)
 
 local pad = Instance.new("UIPadding", scroll)
 pad.PaddingLeft   = UDim.new(0, 10)
@@ -1997,10 +1758,8 @@ pad.PaddingRight  = UDim.new(0, 10)
 pad.PaddingTop    = UDim.new(0, 8)
 pad.PaddingBottom = UDim.new(0, 14)
 
--- Content Y offset tracker
 local Y = 0
 
--- ── Reusable section builders ─────────────────────────────────────
 local function Cap(txt)
     local l = mkLbl(scroll, txt, Y, 13, Color3.fromRGB(100, 165, 115), 9, Enum.Font.GothamBold)
     Y += 12; return l
@@ -2027,11 +1786,6 @@ local function Btn(txt, xs, w, col, fn)
     if fn then b.MouseButton1Click:Connect(fn) end
     return b
 end
-local function BtnRow(txt1, col1, fn1, txt2, col2, fn2)
-    Btn(txt1, 0, 0.485, col1, fn1)
-    Btn(txt2, 0.515, 0.485, col2, fn2)
-    Y += 21
-end
 local function Checkbox(txt, default, onChange)
     local f = mkFrame(scroll, Color3.fromRGB(24, 34, 28), Y, 20)
     mkCorner(f, 5); mkStroke(f, Color3.fromRGB(45, 70, 50))
@@ -2056,7 +1810,6 @@ local function Checkbox(txt, default, onChange)
         if onChange then onChange(state) end
     end)
     Y += 22
-    -- Return a setter so resume logic can sync the checkbox visually
     return function(v)
         state = v
         chk.BackgroundColor3 = v and Color3.fromRGB(42, 150, 70) or Color3.fromRGB(50, 60, 52)
@@ -2092,33 +1845,28 @@ local function TextInput(placeholder, default)
     return tb
 end
 
--- ════════════════════════════════════════════════════════════════
---  STATUS BAR  (always at top of scroll)
--- ════════════════════════════════════════════════════════════════
+-- STATUS
 statusLabel = mkLbl(scroll, "[ IDLE ]", Y, 20,
     Color3.fromRGB(150, 255, 180), 9, Enum.Font.GothamBold)
 statusLabel.TextWrapped = true
-_G._MFRot_StatusLabel = statusLabel  -- tester script reads this
+_G._MFRot_StatusLabel = statusLabel
 Y += 18
 
 local posLbl = Inf("Pos: --")
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 1 · ITEM SETUP
--- ════════════════════════════════════════════════════════════════
+-- SECTION 1 · ITEM SETUP
 Cap("HIGHLIGHTED IN INVENTORY")
 local hlLbl = InfoRow("Selected: --")
 
 local plantItemLbl, breakItemLbl, dropItemLbl
 
--- Apply buttons
 do
     Btn("APPLY PLANT", 0, 0.32, Color3.fromRGB(40, 120, 65), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
-        CFG.plantItemKey = k          -- raw fingerprint — survives server restarts
-        CFG.plantItem    = GetCode(k) -- session code for FindSlotByCode
+        CFG.plantItemKey = k
+        CFG.plantItem    = GetCode(k)
         SetStatus("Plant set: " .. CFG.plantItem, Color3.fromRGB(85, 210, 115))
     end)
     Btn("APPLY BREAK", 0.34, 0.32, Color3.fromRGB(160, 100, 30), function()
@@ -2143,13 +1891,10 @@ breakItemLbl = InfoRow("Break: NOT SET")
 dropItemLbl  = InfoRow("Drop:  NOT SET")
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 2 · FARM WORLD LIST
--- ════════════════════════════════════════════════════════════════
+-- SECTION 2 · FARM WORLD LIST
 Cap("FARM WORLDS")
 Inf("Add worlds to farm. Click to select start world.")
 
--- World list display (scrollable inner list)
 local WL_H = 60
 local wlListFrame = Instance.new("ScrollingFrame", scroll)
 wlListFrame.Size               = UDim2.new(1, 0, 0, WL_H)
@@ -2164,7 +1909,7 @@ mkCorner(wlListFrame, 5); mkStroke(wlListFrame, Color3.fromRGB(45, 75, 50))
 Instance.new("UIPadding", wlListFrame).PaddingLeft = UDim.new(0, 4)
 Y += WL_H + 4
 
-local selectedStartIdx = 0   -- 0 = none selected (default = first)
+local selectedStartIdx = 0
 
 local function RefreshWorldList()
     for _, c in pairs(wlListFrame:GetChildren()) do
@@ -2199,10 +1944,9 @@ local function RefreshWorldList()
     wlListFrame.CanvasSize = UDim2.new(0, 0, 0, #worldList * rowH + 4)
 end
 
--- Add / Remove world input
 local worldInputBox = TextInput("world name to add...")
 do
-    local addW = Btn("+ ADD WORLD", 0, 0.49, Color3.fromRGB(40, 110, 60), function()
+    Btn("+ ADD WORLD", 0, 0.49, Color3.fromRGB(40, 110, 60), function()
         local name = worldInputBox.Text:match("^%s*(.-)%s*$")
         if name == "" then return end
         table.insert(worldList, name)
@@ -2210,7 +1954,7 @@ do
         RefreshWorldList()
         SetStatus("Added world: " .. name, Color3.fromRGB(100, 255, 150))
     end)
-    local remW = Btn("− REMOVE", 0.51, 0.49, Color3.fromRGB(130, 50, 50), function()
+    Btn("− REMOVE", 0.51, 0.49, Color3.fromRGB(130, 50, 50), function()
         local name = worldInputBox.Text:match("^%s*(.-)%s*$")
         if name ~= "" then
             for i, w in ipairs(worldList) do
@@ -2223,7 +1967,6 @@ do
             end
             SetStatus("World not found: " .. name, Color3.fromRGB(255, 80, 80))
         else
-            -- Remove last
             if #worldList > 0 then
                 local removed = table.remove(worldList)
                 if selectedStartIdx == #worldList + 1 then selectedStartIdx = 0; startWorldIdx = 1 end
@@ -2237,9 +1980,7 @@ end
 RefreshWorldList()
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 3 · STORAGE WORLD
--- ════════════════════════════════════════════════════════════════
+-- SECTION 3 · STORAGE WORLD
 Cap("STORAGE WORLD")
 Inf("Bot goes here to drop items after each farm world.")
 local storageInput = TextInput("storage world name...", storageWorld)
@@ -2250,17 +1991,13 @@ storageInput.FocusLost:Connect(function()
 end)
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 4 · SAFE MODE
--- ════════════════════════════════════════════════════════════════
+-- SECTION 4 · SAFE MODE
 Cap("SAFE MODE")
 Checkbox("Auto Stop  (stranger joins → stop)", true, function(v) safeAutoStop = v end)
 Checkbox("Auto Leave  (stranger joins → leave game)", true, function(v) safeAutoLeave = v end)
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 5 · WHITELIST
--- ════════════════════════════════════════════════════════════════
+-- SECTION 5 · WHITELIST
 Cap("WHITELIST")
 local wlCountLbl = Inf("Users: " .. #whitelist)
 
@@ -2323,17 +2060,14 @@ do
 end
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 6 · RESUME LAST PROGRESS
--- ════════════════════════════════════════════════════════════════
+-- SECTION 6 · RESUME
 Cap("RESUME LAST PROGRESS")
 local resumePlayerLbl = Inf("Player: " .. currentPlayerName .. " (current)")
-local setResumeEnabled -- checkbox setter, assigned below
+local setResumeEnabled
 setResumeEnabled = Checkbox("Resume last progress on START", false, function(v)
     resumeEnabled = v
 end)
 
--- Saved sessions list
 local SV_H = 48
 local savedFrame = Instance.new("ScrollingFrame", scroll)
 savedFrame.Size               = UDim2.new(1, 0, 0, SV_H)
@@ -2406,12 +2140,9 @@ end
 RefreshSavedList()
 Div()
 
--- ════════════════════════════════════════════════════════════════
---  SECTION 7 · CONTROLS  (Start / Pause / Stop)
--- ════════════════════════════════════════════════════════════════
+-- SECTION 7 · CONTROLS
 Cap("CONTROLS")
 
--- START button
 local startBtn = Instance.new("TextButton", scroll)
 startBtn.Size             = UDim2.new(1, 0, 0, 24)
 startBtn.Position         = UDim2.new(0, 0, 0, Y)
@@ -2424,7 +2155,6 @@ startBtn.Font             = Enum.Font.GothamBold
 mkCorner(startBtn, 6)
 Y += 28
 
--- PAUSE button
 pauseBtn = Instance.new("TextButton", scroll)
 pauseBtn.Size             = UDim2.new(0.485, 0, 0, 20)
 pauseBtn.Position         = UDim2.new(0, 0, 0, Y)
@@ -2436,7 +2166,6 @@ pauseBtn.TextSize         = 9
 pauseBtn.Font             = Enum.Font.GothamBold
 mkCorner(pauseBtn, 6)
 
--- STOP button
 local stopBtn = Instance.new("TextButton", scroll)
 stopBtn.Size             = UDim2.new(0.485, 0, 0, 20)
 stopBtn.Position         = UDim2.new(0.515, 0, 0, Y)
@@ -2449,7 +2178,6 @@ stopBtn.Font             = Enum.Font.GothamBold
 mkCorner(stopBtn, 6)
 Y += 24
 
--- Update canvas size
 scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
 
 -- ════════════════════════════════════════════════════════════════
@@ -2458,8 +2186,6 @@ scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
 startBtn.MouseButton1Click:Connect(function()
     if isRunning then return end
 
-    -- Clear the user-stopped flag so auto-resume works again
-    -- after this manual START press
     _G._MFRot_UserStopped = false
     pcall(function()
         local all = LoadAllSaves()
@@ -2469,14 +2195,10 @@ startBtn.MouseButton1Click:Connect(function()
         end
     end)
 
-    -- If resume is enabled, apply saved data NOW before validation
-    -- so that CFG items and worldList are populated from the save
     if resumeEnabled then
         local targetName = resumeTarget or currentPlayerName
         local saved = ApplyPlayerSave(targetName)
         if saved then
-            -- Show the raw key fingerprint (image ID portion) so the user
-            -- can see WHICH item was restored, same as RotFarm v3.1
             local function keyName(k)
                 if not k then return "NOT SET" end
                 return k:match("^(%d+)") or k:sub(1, 20)
@@ -2507,11 +2229,9 @@ startBtn.MouseButton1Click:Connect(function()
         end
     end
 
-    -- Apply storage world text box in case user typed and didn't defocus
     local sv = storageInput.Text:match("^%s*(.-)%s*$")
     if sv ~= "" then storageWorld = sv end
 
-    -- Validate
     if #worldList == 0 then
         SetStatus("Add at least 1 farm world!", Color3.fromRGB(255, 80, 80)); return end
     if storageWorld == "" then
@@ -2549,8 +2269,6 @@ stopBtn.MouseButton1Click:Connect(function()
         pauseBtn.Text             = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
-    -- Mark as user-stopped — persists across server switches
-    -- so the farm does NOT auto-resume if the server changes
     _G._MFRot_UserStopped = true
     pcall(function()
         local all = LoadAllSaves()
@@ -2563,7 +2281,6 @@ stopBtn.MouseButton1Click:Connect(function()
     SetStatus("[ STOPPED ] Press START to farm again", Color3.fromRGB(255, 100, 100))
 end)
 
--- Minimize / Close
 minBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
     if isMinimized then
@@ -2588,15 +2305,12 @@ end)
 -- ════════════════════════════════════════════════════════════════
 --  LIVE UPDATERS
 -- ════════════════════════════════════════════════════════════════
-
--- Position display
 table.insert(inst.connections, RunSvc.Heartbeat:Connect(function()
     if inst.dead then return end
     local ix, iy = GetTileIndex()
     posLbl.Text = (ix and iy) and ("Pos: X=" .. ix .. "  Y=" .. iy) or "Pos: --"
 end))
 
--- Highlighted item tracker
 task.spawn(function()
     local lSel = nil
     while not inst.dead do
@@ -2621,7 +2335,6 @@ task.spawn(function()
     end
 end)
 
--- Item totals display
 task.spawn(function()
     while not inst.dead do
         if CFG.plantItem and plantItemLbl then
@@ -2640,7 +2353,6 @@ task.spawn(function()
     end
 end)
 
--- Sync storageWorld if user types in the box without defocusing
 task.spawn(function()
     while not inst.dead do
         local sv = storageInput.Text:match("^%s*(.-)%s*$")
@@ -2650,7 +2362,7 @@ task.spawn(function()
 end)
 
 -- ════════════════════════════════════════════════════════════════
---  SAFE MODE: player join monitor
+--  SAFE MODE
 -- ════════════════════════════════════════════════════════════════
 table.insert(inst.connections, Players.PlayerAdded:Connect(function(plr)
     if plr == player then return end
@@ -2678,25 +2390,16 @@ table.insert(inst.connections, player.CharacterRemoving:Connect(function() stopA
 
 -- ════════════════════════════════════════════════════════════════
 --  AUTO-START
---  On every server load this block runs after the GUI is built.
---  If autoResume=true is in the save (set before every world switch)
---  it restores all state, minimizes the GUI, and calls RunCycle()
---  automatically — the farm continues with no user interaction.
---  If autoResume is false/absent the GUI opens normally, full size.
 -- ════════════════════════════════════════════════════════════════
 task.spawn(function()
-    task.wait(0.5)  -- let GUI finish building
+    task.wait(0.5)
 
     local all   = LoadAllSaves()
     local saved = all[currentPlayerName]
 
-    -- Only auto-resume if this is a real server-switch load
-    -- (_G._MFRot_ServerSwitch is set by lobby detection when pendingName ~= "")
     local cameFromSwitch = (_G._MFRot_ServerSwitch == true)
-    _G._MFRot_ServerSwitch = nil  -- consume flag
+    _G._MFRot_ServerSwitch = nil
 
-    -- If user manually pressed STOP, respect that — no auto-resume
-    -- even if the server switched (they want the farm fully stopped)
     if saved and saved.userStopped == true then
         _G._MFRot_UserStopped = true
         SetStatus("[ STOPPED ] Press START to farm again", Color3.fromRGB(255, 140, 100))
@@ -2705,29 +2408,23 @@ task.spawn(function()
     end
 
     if not (saved and saved.autoResume == true and cameFromSwitch) then
-        -- Not a farm server-switch — show GUI, wait for user
         SetStatus("[ READY ] Configure and press START", Color3.fromRGB(150, 255, 180))
         print("[MFRot] Loaded — press START when ready.")
         return
     end
 
-    -- ── Auto-resume path (came from server switch with active farm) ──
     print("[MFRot v1.0] Server switch detected — resuming farm...")
 
-    -- Show GUI full size briefly so user sees it loading, then minimize.
-    -- Minimized = title bar only (360 x 36px) pinned to top-left corner.
     if main then
         main.Visible  = true
-        main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_FULL)  -- full size first
+        main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_FULL)
     end
     if scroll then scroll.Visible = true end
     if minBtn  then minBtn.Text   = "-" end
     isMinimized = false
 
-    -- Apply saved state into all live variables
     ApplyPlayerSave(currentPlayerName)
 
-    -- Sync GUI labels — show image asset ID from the raw fingerprint
     local function _kn(k) return k and (k:match("^(%d+)") or k:sub(1,16)) or "?" end
     if plantItemLbl then
         plantItemLbl.Text = CFG.plantItem
@@ -2747,17 +2444,14 @@ task.spawn(function()
     if storageInput then storageInput.Text = storageWorld end
     RefreshWorldList()
 
-    task.wait(1)  -- let tile watcher initialize
+    task.wait(1)
 
-    -- Validate before starting
     if not CFG.plantItem or not CFG.breakItem or not CFG.dropItem then
-        -- Expand GUI so user sees the problem
         isMinimized = false
         if main then main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_FULL) end
         if scroll then scroll.Visible = true end
         if minBtn then minBtn.Text = "-" end
-        SetStatus("Auto-resume: items missing — press START manually",
-            Color3.fromRGB(255, 180, 80))
+        SetStatus("Auto-resume: items missing — press START manually", Color3.fromRGB(255, 180, 80))
         ClearAutoResume(); return
     end
     if #worldList == 0 or storageWorld == "" then
@@ -2765,16 +2459,13 @@ task.spawn(function()
         if main then main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_FULL) end
         if scroll then scroll.Visible = true end
         if minBtn then minBtn.Text = "-" end
-        SetStatus("Auto-resume: worlds missing — press START manually",
-            Color3.fromRGB(255, 180, 80))
+        SetStatus("Auto-resume: worlds missing — press START manually", Color3.fromRGB(255, 180, 80))
         ClearAutoResume(); return
     end
 
-    -- Show status in the minimized title bar
     SetStatus("Resuming world " .. currentWorldIdx .. "/" .. #worldList .. "...",
         Color3.fromRGB(180, 220, 255))
 
-    -- Force resume mode so RunCycle picks up the saved world/phase
     resumeEnabled = true
     resumeTarget  = currentPlayerName
 
@@ -2784,7 +2475,6 @@ task.spawn(function()
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
 
-    -- Let user see the GUI for 3 seconds, then minimize to title bar
     task.spawn(function()
         task.wait(3)
         if isRunning and main and not inst.dead then
