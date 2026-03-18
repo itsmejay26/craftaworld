@@ -1081,6 +1081,7 @@ local function RunHarvest(guardFn, resumeRowY)
     end
 
     return guardFn()
+end
 
 -- ════════════════════════════════════════════════════════════════
 --  STEP 2 · PLANT  (Full layer Y=7 → Y=59, bottom to top)
