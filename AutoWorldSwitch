@@ -930,7 +930,8 @@ local function RunHarvest(guardFn, resumeRowY)
             task.wait(0.3); return true
         end
         if not guardFn() then return false end
-        currentRowY = rowY
+        local rowY   = rows[ri]
+        currentRowY  = rowY
         local isFirst = (ri == 1)
         local isLast  = (ri == #rows)
         local belowY  = rowY - 2
