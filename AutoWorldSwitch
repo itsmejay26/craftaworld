@@ -70,7 +70,6 @@ do
         -- Read pending world
         local target = ""
         pcall(function()
-            if not readfile then return end
             local c = readfile("craftaworld/pending_world.txt")
             local t = c and c:match("^%s*(.-)%s*$")
             if t and t ~= "" then target = t end
@@ -155,8 +154,7 @@ do
         -- from_switch.txt stores the world name written by joinWorld()
         local switchedWorld = ""
         pcall(function()
-            if not isfile or not readfile or not writefile then return end
-            if isfile("craftaworld/from_switch.txt") then
+            if isfile and isfile("craftaworld/from_switch.txt") then
                 local raw = readfile("craftaworld/from_switch.txt")
                 local w = raw and raw:match("^%s*(.-)%s*$") or ""
                 if w ~= "" then switchedWorld = w end
@@ -304,7 +302,6 @@ end
 local function LoadWL()
     local ok, d = pcall(function()
         if isfile and isfile(WL_FILE) then
-            if not readfile then return nil end
             return HttpSvc:JSONDecode(readfile(WL_FILE))
         end
     end)
@@ -406,7 +403,6 @@ end
 local function LoadAllSaves()
     local ok, d = pcall(function()
         if isfile and isfile(SAVE_FILE) then
-            if not readfile then return nil end
             return HttpSvc:JSONDecode(readfile(SAVE_FILE))
         end
     end)
