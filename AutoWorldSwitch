@@ -2719,7 +2719,6 @@ task.spawn(function()
     if main then
         main.Visible  = true
         main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_FULL)  -- full size first
-        main.Position = UDim2.new(0, 8, 0, 8)               -- top-left corner
     end
     if scroll then scroll.Visible = true end
     if minBtn  then minBtn.Text   = "-" end
@@ -2791,7 +2790,6 @@ task.spawn(function()
         if isRunning and main and not inst.dead then
             isMinimized   = true
             main.Size     = UDim2.new(0, WIN_SIZE, 0, WIN_MIN)
-            main.Position = UDim2.new(0, 8, 0, 8)  -- top-left corner
             if scroll then scroll.Visible = false end
             if minBtn  then minBtn.Text   = "+" end
         end
