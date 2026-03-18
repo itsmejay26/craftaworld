@@ -1000,21 +1000,14 @@ local function RunHarvest(guardFn, resumeRowY)
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY, Color3.fromRGB(220,160,60))
             lr = tick(); startMoveLeft()
+            local fellEarlyP2 = false
             while guardFn() do
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex()
                 if not ix then task.wait(0.01); continue end
                 if iy2 and iy2 < rowY then
-                    -- Fell off — if near left edge it was natural, otherwise climb back
-                    if ix <= 3 then stopAll(); break end
-                    stopAll()
-                    SetStatus("RECOVER← Y="..rowY, Color3.fromRGB(255,160,60))
-                    local fallX = ix
-                    local side = (fallX <= 50) and JMP_LEFT or JMP_RIGHT
-                    walkToX(side, guardFn); if not guardFn() then return false end
-                    climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(math.max(fallX - 1, JMP_LEFT), guardFn); if not guardFn() then return false end
-                    lr = tick(); startMoveLeft(); continue
+                    if ix <= 3 then break end
+                    fellEarlyP2 = true; stopAll(); break
                 end
                 if ix <= TRAV_LEFT then stopAll(); break end
                 local mX, mY = getMiss()
@@ -1034,6 +1027,32 @@ local function RunHarvest(guardFn, resumeRowY)
             end
             stopAll()
             if not guardFn() then return false end
+
+            -- If fell off early mid-sweep, climb back and redo the belowY pass from right
+            if fellEarlyP2 then
+                climbToY(rowY, guardFn); if not guardFn() then return false end
+                walkToX(JMP_RIGHT, guardFn); if not guardFn() then return false end
+                SetStatus("H-REDO BLW← Y="..belowY, Color3.fromRGB(220,130,50))
+                hClearPending()
+                lr = tick(); startMoveLeft()
+                while guardFn() do
+                    local ix, iy2 = GetTileIndex()
+                    if not ix then task.wait(0.01); continue end
+                    if iy2 and iy2 < rowY then stopAll(); break end
+                    if ix <= TRAV_LEFT then stopAll(); break end
+                    local mX, mY = getMiss()
+                    if mX then
+                        local rx = GetTileIndex()
+                        if not fixMiss(mX, mY, rx, rowY, guardFn) then return false end
+                        lr = tick(); startMoveLeft(); continue
+                    end
+                    if tick() - lr >= MOV_REFRESH then startMoveLeft(); lr = tick() end
+                    if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
+                    task.wait(0.01)
+                end
+                stopAll()
+                if not guardFn() then return false end
+            end
             task.wait(0.1)
 
         elseif isLast then
@@ -1089,15 +1108,9 @@ local function RunHarvest(guardFn, resumeRowY)
                 local ix, iy2 = GetTileIndex()
                 if not ix then task.wait(0.01); continue end
                 if iy2 and iy2 < rowY then
-                    -- Fell off — if near right edge it was natural, otherwise climb back
                     if ix >= TRAV_RIGHT - 2 then stopAll(); break end
-                    stopAll()
-                    SetStatus("RECOVER→ Y="..rowY, Color3.fromRGB(255,160,60))
-                    local fallX = ix
-                    local side = (fallX <= 50) and JMP_LEFT or JMP_RIGHT
-                    walkToX(side, guardFn); if not guardFn() then return false end
-                    climbToY(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(math.min(fallX + 1, TRAV_RIGHT), guardFn); if not guardFn() then return false end
+                    stopAll(); climbToY(rowY, guardFn); if not guardFn() then return false end
+                    walkToX(JMP_LEFT, guardFn); if not guardFn() then return false end
                     lr = tick(); startMoveRight(); continue
                 end
                 if ix >= TRAV_RIGHT then stopAll(); break end
@@ -1845,8 +1858,8 @@ end
 --  Scrollable content, minimizable, draggable
 -- ════════════════════════════════════════════════════════════════
 
-local WIN_SIZE  = 360          -- square: width = height of content area
-local WIN_TITLE = 36           -- title bar height
+local WIN_SIZE  = 240          -- square: width = height of content area
+local WIN_TITLE = 28           -- title bar height
 local WIN_FULL  = WIN_SIZE + WIN_TITLE
 local WIN_MIN   = WIN_TITLE
 
@@ -1915,31 +1928,31 @@ local tbFill = mkFrame(titleBar, Color3.fromRGB(24, 36, 28), WIN_TITLE - 10, 10)
 tbFill.Size = UDim2.new(1, 0, 0, 10)
 
 local titleLbl = mkLbl(titleBar, "⚙ Multi Farm Rotation v1.0", 0, WIN_TITLE,
-    Color3.fromRGB(180, 255, 195), 12, Enum.Font.GothamBold)
+    Color3.fromRGB(180, 255, 195), 10, Enum.Font.GothamBold)
 titleLbl.Position = UDim2.new(0, 10, 0, 0)
-titleLbl.Size     = UDim2.new(1, -70, 1, 0)
+titleLbl.Size     = UDim2.new(1, -46, 1, 0)
 
 -- Minimize button
 local minBtn = Instance.new("TextButton", titleBar)
-minBtn.Size             = UDim2.new(0, 22, 0, 22)
-minBtn.Position         = UDim2.new(1, -50, 0.5, -11)
+minBtn.Size             = UDim2.new(0, 18, 0, 18)
+minBtn.Position         = UDim2.new(1, -40, 0.5, -9)
 minBtn.BackgroundColor3 = Color3.fromRGB(50, 90, 60)
 minBtn.BorderSizePixel  = 0
 minBtn.Text             = "−"
 minBtn.TextColor3       = Color3.fromRGB(180, 255, 195)
-minBtn.TextSize         = 18
+minBtn.TextSize         = 14
 minBtn.Font             = Enum.Font.GothamBold
 mkCorner(minBtn, 5)
 
 -- Close button
 local closeBtn = Instance.new("TextButton", titleBar)
-closeBtn.Size             = UDim2.new(0, 22, 0, 22)
-closeBtn.Position         = UDim2.new(1, -25, 0.5, -11)
+closeBtn.Size             = UDim2.new(0, 18, 0, 18)
+closeBtn.Position         = UDim2.new(1, -20, 0.5, -9)
 closeBtn.BackgroundColor3 = Color3.fromRGB(160, 50, 50)
 closeBtn.BorderSizePixel  = 0
 closeBtn.Text             = "×"
 closeBtn.TextColor3       = Color3.new(1, 1, 1)
-closeBtn.TextSize         = 16
+closeBtn.TextSize         = 13
 closeBtn.Font             = Enum.Font.GothamBold
 mkCorner(closeBtn, 5)
 
@@ -1989,25 +2002,25 @@ local Y = 0
 -- ── Reusable section builders ─────────────────────────────────────
 local function Cap(txt)
     local l = mkLbl(scroll, txt, Y, 13, Color3.fromRGB(100, 165, 115), 9, Enum.Font.GothamBold)
-    Y += 15; return l
+    Y += 12; return l
 end
 local function Inf(txt)
     local l = mkLbl(scroll, txt, Y, 12, Color3.fromRGB(130, 175, 145), 9)
-    Y += 13; return l
+    Y += 11; return l
 end
 local function Div()
     local f = mkFrame(scroll, Color3.fromRGB(45, 75, 55), Y, 1)
-    Y += 7; return f
+    Y += 5; return f
 end
 local function Btn(txt, xs, w, col, fn)
     local b = Instance.new("TextButton", scroll)
-    b.Size             = UDim2.new(w, 0, 0, 22)
+    b.Size             = UDim2.new(w, 0, 0, 18)
     b.Position         = UDim2.new(xs, 0, 0, Y)
     b.BackgroundColor3 = col
     b.BorderSizePixel  = 0
     b.Text             = txt
     b.TextColor3       = Color3.new(1, 1, 1)
-    b.TextSize         = 10
+    b.TextSize         = 8
     b.Font             = Enum.Font.GothamBold
     mkCorner(b, 5)
     if fn then b.MouseButton1Click:Connect(fn) end
@@ -2016,32 +2029,32 @@ end
 local function BtnRow(txt1, col1, fn1, txt2, col2, fn2)
     Btn(txt1, 0, 0.485, col1, fn1)
     Btn(txt2, 0.515, 0.485, col2, fn2)
-    Y += 26
+    Y += 21
 end
 local function Checkbox(txt, default, onChange)
-    local f = mkFrame(scroll, Color3.fromRGB(24, 34, 28), Y, 24)
+    local f = mkFrame(scroll, Color3.fromRGB(24, 34, 28), Y, 20)
     mkCorner(f, 5); mkStroke(f, Color3.fromRGB(45, 70, 50))
     local state = default
     local chk = Instance.new("TextButton", f)
-    chk.Size             = UDim2.new(0, 18, 0, 18)
-    chk.Position         = UDim2.new(0, 4, 0.5, -9)
+    chk.Size             = UDim2.new(0, 14, 0, 14)
+    chk.Position         = UDim2.new(0, 3, 0.5, -7)
     chk.BackgroundColor3 = state and Color3.fromRGB(42, 150, 70) or Color3.fromRGB(50, 60, 52)
     chk.BorderSizePixel  = 0
     chk.Text             = state and "✓" or ""
     chk.TextColor3       = Color3.new(1, 1, 1)
-    chk.TextSize         = 12
+    chk.TextSize         = 10
     chk.Font             = Enum.Font.GothamBold
     mkCorner(chk, 4)
     local lbl = mkLbl(f, txt, 0, 24, Color3.fromRGB(200, 230, 210), 10)
-    lbl.Position = UDim2.new(0, 28, 0, 0)
-    lbl.Size     = UDim2.new(1, -32, 1, 0)
+    lbl.Position = UDim2.new(0, 20, 0, 0)
+    lbl.Size     = UDim2.new(1, -24, 1, 0)
     chk.MouseButton1Click:Connect(function()
         state = not state
         chk.BackgroundColor3 = state and Color3.fromRGB(42, 150, 70) or Color3.fromRGB(50, 60, 52)
         chk.Text = state and "✓" or ""
         if onChange then onChange(state) end
     end)
-    Y += 28
+    Y += 22
     -- Return a setter so resume logic can sync the checkbox visually
     return function(v)
         state = v
@@ -2050,16 +2063,16 @@ local function Checkbox(txt, default, onChange)
     end
 end
 local function InfoRow(labelTxt)
-    local f = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 24)
+    local f = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
     mkCorner(f, 5); mkStroke(f, Color3.fromRGB(45, 75, 55))
-    local lbl = mkLbl(f, labelTxt, 0, 24, Color3.fromRGB(150, 210, 165), 10)
+    local lbl = mkLbl(f, labelTxt, 0, 20, Color3.fromRGB(150, 210, 165), 8)
     lbl.Position = UDim2.new(0, 8, 0, 0); lbl.Size = UDim2.new(1, -8, 1, 0)
     lbl.TextTruncate = Enum.TextTruncate.AtEnd
-    Y += 28
+    Y += 22
     return lbl
 end
 local function TextInput(placeholder, default)
-    local f = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 24)
+    local f = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
     mkCorner(f, 5); mkStroke(f, Color3.fromRGB(45, 75, 55))
     local tb = Instance.new("TextBox", f)
     tb.Size               = UDim2.new(1, 0, 1, 0)
@@ -2069,12 +2082,12 @@ local function TextInput(placeholder, default)
     tb.Text               = default or ""
     tb.PlaceholderColor3  = Color3.fromRGB(80, 110, 88)
     tb.TextColor3         = Color3.fromRGB(200, 240, 210)
-    tb.TextSize           = 10
+    tb.TextSize           = 8
     tb.Font               = Enum.Font.Gotham
     tb.TextXAlignment     = Enum.TextXAlignment.Left
     tb.ClearTextOnFocus   = false
     Instance.new("UIPadding", tb).PaddingLeft = UDim.new(0, 8)
-    Y += 28
+    Y += 22
     return tb
 end
 
@@ -2082,10 +2095,10 @@ end
 --  STATUS BAR  (always at top of scroll)
 -- ════════════════════════════════════════════════════════════════
 statusLabel = mkLbl(scroll, "[ IDLE ]", Y, 20,
-    Color3.fromRGB(150, 255, 180), 10, Enum.Font.GothamBold)
+    Color3.fromRGB(150, 255, 180), 9, Enum.Font.GothamBold)
 statusLabel.TextWrapped = true
 _G._MFRot_StatusLabel = statusLabel  -- tester script reads this
-Y += 22
+Y += 18
 
 local posLbl = Inf("Pos: --")
 Div()
@@ -2121,7 +2134,7 @@ do
         CFG.dropItem    = GetCode(k)
         SetStatus("Drop set: " .. CFG.dropItem, Color3.fromRGB(200, 130, 255))
     end)
-    Y += 26
+    Y += 21
 end
 
 plantItemLbl = InfoRow("Plant: NOT SET")
@@ -2136,7 +2149,7 @@ Cap("FARM WORLDS")
 Inf("Add worlds to farm. Click to select start world.")
 
 -- World list display (scrollable inner list)
-local WL_H = 80
+local WL_H = 60
 local wlListFrame = Instance.new("ScrollingFrame", scroll)
 wlListFrame.Size               = UDim2.new(1, 0, 0, WL_H)
 wlListFrame.Position           = UDim2.new(0, 0, 0, Y)
@@ -2218,7 +2231,7 @@ do
             end
         end
     end)
-    Y += 26
+    Y += 21
 end
 RefreshWorldList()
 Div()
@@ -2250,7 +2263,7 @@ Div()
 Cap("WHITELIST")
 local wlCountLbl = Inf("Users: " .. #whitelist)
 
-local WL2_H = 56
+local WL2_H = 44
 local wlFrame = Instance.new("ScrollingFrame", scroll)
 wlFrame.Size               = UDim2.new(1, 0, 0, WL2_H)
 wlFrame.Position           = UDim2.new(0, 0, 0, Y)
@@ -2305,7 +2318,7 @@ do
         end
     end)
     Btn("↺", 0.68, 0.32, Color3.fromRGB(40, 70, 50), function() RefreshWL() end)
-    Y += 26
+    Y += 21
 end
 Div()
 
@@ -2320,7 +2333,7 @@ setResumeEnabled = Checkbox("Resume last progress on START", false, function(v)
 end)
 
 -- Saved sessions list
-local SV_H = 60
+local SV_H = 48
 local savedFrame = Instance.new("ScrollingFrame", scroll)
 savedFrame.Size               = UDim2.new(1, 0, 0, SV_H)
 savedFrame.Position           = UDim2.new(0, 0, 0, Y)
@@ -2386,7 +2399,7 @@ do
         resumePlayerLbl.Text = "Player: " .. currentPlayerName .. " (current)"
         RefreshSavedList()
     end)
-    Y += 26
+    Y += 21
 end
 
 RefreshSavedList()
@@ -2399,41 +2412,41 @@ Cap("CONTROLS")
 
 -- START button
 local startBtn = Instance.new("TextButton", scroll)
-startBtn.Size             = UDim2.new(1, 0, 0, 30)
+startBtn.Size             = UDim2.new(1, 0, 0, 24)
 startBtn.Position         = UDim2.new(0, 0, 0, Y)
 startBtn.BackgroundColor3 = Color3.fromRGB(38, 145, 65)
 startBtn.BorderSizePixel  = 0
 startBtn.Text             = "▶  START"
 startBtn.TextColor3       = Color3.new(1, 1, 1)
-startBtn.TextSize         = 13
+startBtn.TextSize         = 10
 startBtn.Font             = Enum.Font.GothamBold
 mkCorner(startBtn, 6)
-Y += 34
+Y += 28
 
 -- PAUSE button
 pauseBtn = Instance.new("TextButton", scroll)
-pauseBtn.Size             = UDim2.new(0.485, 0, 0, 26)
+pauseBtn.Size             = UDim2.new(0.485, 0, 0, 20)
 pauseBtn.Position         = UDim2.new(0, 0, 0, Y)
 pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
 pauseBtn.BorderSizePixel  = 0
 pauseBtn.Text             = "⏸ PAUSE"
 pauseBtn.TextColor3       = Color3.new(1, 1, 1)
-pauseBtn.TextSize         = 11
+pauseBtn.TextSize         = 9
 pauseBtn.Font             = Enum.Font.GothamBold
 mkCorner(pauseBtn, 6)
 
 -- STOP button
 local stopBtn = Instance.new("TextButton", scroll)
-stopBtn.Size             = UDim2.new(0.485, 0, 0, 26)
+stopBtn.Size             = UDim2.new(0.485, 0, 0, 20)
 stopBtn.Position         = UDim2.new(0.515, 0, 0, Y)
 stopBtn.BackgroundColor3 = Color3.fromRGB(165, 50, 50)
 stopBtn.BorderSizePixel  = 0
 stopBtn.Text             = "■  STOP"
 stopBtn.TextColor3       = Color3.new(1, 1, 1)
-stopBtn.TextSize         = 11
+stopBtn.TextSize         = 9
 stopBtn.Font             = Enum.Font.GothamBold
 mkCorner(stopBtn, 6)
-Y += 30
+Y += 24
 
 -- Update canvas size
 scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
