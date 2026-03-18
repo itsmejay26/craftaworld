@@ -947,7 +947,7 @@ local function RunHarvest(guardFn, resumeRowY)
 
         local rowY  = rows[ri]
         currentRowY = rowY
-        local isFirst = (ri == 1)
+        local isFirst = (ri == startIdx)
         local isLast  = (ri == #rows)
         local belowY  = rowY - 2
         local lr
