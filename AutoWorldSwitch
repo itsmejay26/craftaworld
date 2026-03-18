@@ -28,7 +28,7 @@ local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 local RunSvc  = game:GetService("RunService")
 local UIS     = game:GetService("UserInputService")
-local VIM     = pcall(game.GetService, game, "VirtualInputManager") and game:GetService("VirtualInputManager") or nil
+local VIM     = game:GetService("VirtualInputManager")
 local HttpSvc = game:GetService("HttpService")
 local player  = Players.LocalPlayer
 local gui     = player:WaitForChild("PlayerGui")
@@ -529,14 +529,14 @@ end
 local function joinWorld(worldName)
     if not worldName or worldName == "" then return end
     SetStatus("SWITCH → " .. worldName, Color3.fromRGB(180, 180, 255))
-    pcall(function() if makefolder then makefolder(DATA_FOLDER) end end)
+    pcall(makefolder, DATA_FOLDER)
     -- Write target so the lobby server knows which world to join
-    pcall(function() if writefile then writefile(DATA_FILE, worldName) end end)
+    pcall(function() writefile(DATA_FILE, worldName) end)
     -- Write the world NAME into from_switch.txt so the world server
     -- can set _G._MFRot_JoinedWorld correctly on next load
     pcall(function()
-        if makefolder then makefolder("craftaworld") end
-        if writefile then writefile("craftaworld/from_switch.txt", worldName) end
+        makefolder("craftaworld")
+        writefile("craftaworld/from_switch.txt", worldName)
     end)
 
     if isInLobby() then
@@ -730,8 +730,8 @@ end
 --  STEP 2 · MOVEMENT HELPERS
 -- ════════════════════════════════════════════════════════════════
 
-local function pressKey(k)    if VIM then pcall(function() VIM:SendKeyEvent(true,  k, false, game) end) end end
-local function releaseKey(k)  if VIM then pcall(function() VIM:SendKeyEvent(false, k, false, game) end) end end
+local function pressKey(k)    VIM:SendKeyEvent(true,  k, false, game) end
+local function releaseKey(k)  VIM:SendKeyEvent(false, k, false, game) end
 local function startMoveRight() releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D) end
 local function startMoveLeft()  releaseKey(Enum.KeyCode.A); task.wait(0.01); pressKey(Enum.KeyCode.A) end
 local function stopAll()
