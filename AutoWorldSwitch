@@ -834,6 +834,31 @@ end
 --      4. Fall naturally to next row (walk off right edge)
 --    Final row: fall all the way to BREAK_FLOOR_Y
 -- ════════════════════════════════════════════════════════════════
+-- handleBoundary: walk off left or right edge to fall to the next row.
+-- isRight=true  → we're at the right side, press A to walk left off edge
+-- isRight=false → we're at the left side, press D to walk right off edge
+-- Waits until Y changes (fell to a new row) then stops.
+local function handleBoundary(isRight, guardFn, refY)
+    local _, ySaved = GetTileIndex()
+    if isRight then
+        releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.A)
+    else
+        releaseKey(Enum.KeyCode.A); task.wait(0.01); pressKey(Enum.KeyCode.D)
+    end
+    local ft = tick()
+    while guardFn() and not inst.dead do
+        local _, yN = GetTileIndex()
+        if yN and ySaved and yN ~= ySaved then
+            stopAll()
+            if yN <= BREAK_FLOOR_Y then return "last", ySaved end
+            return "fell", yN
+        end
+        if tick() - ft >= 0.5 then stopAll(); return "last", ySaved end
+        task.wait(0.01)
+    end
+    stopAll(); return "stopped", ySaved
+end
+
 local function RunHarvest(guardFn, resumeRowY)
     if _G._MFRot_SkipHarvest then
         _G._MFRot_SkipHarvest = nil
