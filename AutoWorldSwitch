@@ -1137,6 +1137,147 @@ local function RunHarvest(guardFn, resumeRowY)
 end
 
 -- ════════════════════════════════════════════════════════════════
+--  STEP 2 · PLANT  (Full layer Y=7 → Y=59, bottom to top)
+-- ════════════════════════════════════════════════════════════════
+local function RunPlant(guardFn, resumeRowY)
+    if _G._MFRot_SkipPlant then
+        _G._MFRot_SkipPlant = nil
+        SetStatus("TEST: Plant skipped", Color3.fromRGB(200, 200, 100))
+        task.wait(0.5); return true
+    end
+    ensureWatching()
+    local rows = getAllRows()   -- Y=59, 57 … 7 top-to-bottom
+    -- Plant bottom-to-top, so reverse
+    local plantRows = {}
+    for i = #rows, 1, -1 do table.insert(plantRows, rows[i]) end
+    -- plantRows is now Y=7, 9, 11 … 59
+
+    local startIdx = 1
+    if resumeRowY then
+        for i, y in ipairs(plantRows) do
+            if y >= resumeRowY then startIdx = i; break end
+        end
+    end
+
+    local pending = {}
+    local ignored = {}
+    local function isIgn(x, y) return ignored[x..","..y] end
+    local function ign(x, y)   ignored[x..","..y] = true  end
+
+    local _, iy = GetTileIndex()
+    if not iy or math.abs(iy - plantRows[startIdx]) > 1 then
+        goToRowY(plantRows[startIdx], guardFn)
+        if not guardFn() then return false end
+    end
+
+    for pi = startIdx, #plantRows do
+        if _G._MFRot_SkipPlant then
+            _G._MFRot_SkipPlant = nil
+            stopAll()
+            SetStatus("TEST: Plant skipped", Color3.fromRGB(200, 200, 100))
+            task.wait(0.3); return true
+        end
+        if not guardFn() then return false end
+        local rowY = plantRows[pi]
+        currentRowY = rowY
+
+        goToRowY(rowY, guardFn); if not guardFn() then return false end
+
+        local ix0 = GetTileIndex() or 50
+        local sweepRight = (ix0 <= 50)
+        SetStatus("PLANT " .. pi .. "/" .. #plantRows
+            .. " Y=" .. rowY .. (sweepRight and " →" or " ←"),
+            Color3.fromRGB(85, 215, 110))
+
+        local resumeAfterFall = nil
+        local lr = tick()
+        if sweepRight then startMoveRight() else startMoveLeft() end
+
+        while guardFn() do
+            if _G._MFRot_SkipPlant then stopAll(); break end
+            local ix, iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
+
+            if iy2 and iy2 ~= rowY then
+                stopAll()
+                local fallX = resumeAfterFall or ix
+                goToRowY(rowY, guardFn); if not guardFn() then return false end
+                walkToX(fallX, guardFn); if not guardFn() then return false end
+                resumeAfterFall = nil
+                lr = tick()
+                if sweepRight then startMoveRight() else startMoveLeft() end
+                continue
+            end
+
+            if sweepRight     and ix >= TRAV_RIGHT then stopAll(); break end
+            if not sweepRight and ix <= TRAV_LEFT  then stopAll(); break end
+
+            local now = tick()
+            local missX, missY = nil, nil
+            for i = #pending, 1, -1 do
+                local p = pending[i]
+                if now - p.timestamp >= PLANT_DELAY then
+                    if wTE(p.x, p.y) then
+                        ign(p.x, p.y); table.remove(pending, i)
+                    elseif not isIgn(p.x, p.y) then
+                        missX, missY = p.x, p.y; table.remove(pending, i); break
+                    else
+                        table.remove(pending, i)
+                    end
+                end
+            end
+
+            if missX then
+                stopAll()
+                SetStatus("P-MISS X=" .. missX, Color3.fromRGB(255, 180, 80))
+                local resumeX, recY = GetTileIndex()
+                if recY and missY and recY < missY then
+                    climbToY(missY, guardFn); if not guardFn() then return false end
+                    resumeX = GetTileIndex()
+                end
+                resumeAfterFall = resumeX
+                walkToX(missX, guardFn); if not guardFn() then return false end
+                for _ = 1, 5 do
+                    local sn = FindSlotByCode(CFG.plantItem)
+                    if sn then placeR:FireServer(Vector2.new(missX, missY), sn) end
+                    task.wait(0.02)
+                end
+                ign(missX, missY)
+                if not guardFn() then return false end
+                if resumeX then walkToX(resumeX, guardFn); if not guardFn() then return false end end
+                resumeAfterFall = nil
+                lr = tick()
+                if sweepRight then startMoveRight() else startMoveLeft() end
+                continue
+            end
+
+            if tick() - lr >= MOV_REFRESH then
+                if sweepRight then startMoveRight() else startMoveLeft() end
+                lr = tick()
+            end
+
+            if iy2 and ix > 0 and ix < 100
+               and iy2 >= BREAK_FLOOR_Y
+               and not isIgn(ix, iy2) and not wTE(ix, iy2) then
+                local sn = FindSlotByCode(CFG.plantItem)
+                if sn then
+                    placeR:FireServer(Vector2.new(ix, iy2), sn)
+                    table.insert(pending, { x=ix, y=iy2, timestamp=tick() })
+                end
+            end
+            task.wait(0.01)
+        end
+        if _G._MFRot_SkipPlant then _G._MFRot_SkipPlant=nil; stopAll(); SetStatus("TEST: Plant skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
+        stopAll(); if not guardFn() then return false end
+
+        if pi < #plantRows then
+            goToRowY(plantRows[pi + 1], guardFn); if not guardFn() then return false end
+        end
+    end
+
+    return guardFn()
+end
+
+-- ════════════════════════════════════════════════════════════════
 --  STEP 3 · BREAK  (PnB method — from Auto Fast PnB v2.0)
 --
 --  Full sequence:
