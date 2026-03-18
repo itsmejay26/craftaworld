@@ -250,6 +250,109 @@ local function SetStatus(txt, col)
 end
 
 -- ════════════════════════════════════════════════════════════════
+--  WEBHOOK
+-- ════════════════════════════════════════════════════════════════
+local WEBHOOK_URL         = "https://discord.com/api/webhooks/1483764467904020522/HOBLctofpi6_n6V7XNqj3D-kDcbgBS4N5m3PN-Bq9ZlANphlycE2L7m-lrmHlBCjKJV6"
+local WH_GENERAL_INTERVAL = 600   -- 10 minutes between periodic updates
+local WH_BOT_USERNAME     = player.Name
+
+-- Timing trackers (set when RunCycle starts)
+local whStartTime      = nil   -- tick() when the farm was started
+local whCycle1Start    = nil   -- tick() when cycle 1 began
+local whCycle1End      = nil   -- tick() when cycle 1 finished (first full lap of all worlds)
+local whCurrentWorld   = ""    -- which world the bot is in right now
+
+-- Format seconds → "Xh Ym Zs"
+local function whFmtTime(secs)
+    secs = math.floor(secs)
+    local h = math.floor(secs / 3600)
+    local m = math.floor((secs % 3600) / 60)
+    local s = secs % 60
+    if h > 0 then return h.."h "..m.."m "..s.."s" end
+    if m > 0 then return m.."m "..s.."s" end
+    return s.."s"
+end
+
+local function whGetPingMs()
+    local ok, val = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and val and val > 0 then return math.floor(val) end
+    local t0 = tick(); RunSvc.Heartbeat:Wait()
+    local ms = math.floor((tick() - t0) * 1000)
+    return ms > 0 and ms or 0
+end
+
+local function whRequest(payload)
+    local reqFn = (syn and syn.request)
+               or (http_request and http_request)
+               or (request and request)
+    if not reqFn then return end
+    pcall(reqFn, {
+        Url     = WEBHOOK_URL,
+        Method  = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body    = HttpSvc:JSONEncode(payload),
+    })
+end
+
+-- whSend: called from RunCycle on every phase transition + periodic update.
+-- phase = short human-readable string describing what the bot is doing.
+local function whSend(phase)
+    task.spawn(function()
+        local OSTime = os.time()
+        local Time   = os.date("!*t", OSTime)
+        local pingMs = whGetPingMs()
+        local isOnline = pingMs > 0
+
+        local seeds  = CFG.plantItem and GetTotalByCode(CFG.plantItem) or 0
+        local blocks = CFG.breakItem and GetTotalByCode(CFG.breakItem) or 0
+        local drops  = CFG.dropItem  and GetTotalByCode(CFG.dropItem)  or 0
+
+        local pingStr      = isOnline and (pingMs.."ms") or "N/A"
+        local botStatus    = isOnline and "🟢 Online" or "🔴 Offline"
+        local embedColor   = isOnline and 3066993 or 15158332
+        local contentMsg   = isOnline and "" or "@everyone"
+
+        local uptimeStr = whStartTime and whFmtTime(tick() - whStartTime) or "N/A"
+        local cycle1Str = "N/A"
+        if whCycle1End then
+            cycle1Str = whFmtTime(whCycle1End - (whCycle1Start or whStartTime or whCycle1End))
+        elseif whCycle1Start then
+            cycle1Str = whFmtTime(tick() - whCycle1Start) .. " (ongoing)"
+        end
+
+        local worldStr = whCurrentWorld ~= "" and whCurrentWorld or "—"
+
+        local fields = {
+            { name = "⚙️ Phase",       value = phase,              inline = false },
+            { name = "🤖 Bot",         value = WH_BOT_USERNAME,    inline = true  },
+            { name = "📡 Status",      value = botStatus,          inline = true  },
+            { name = "🏓 Ping",        value = pingStr,            inline = true  },
+            { name = "🌍 World",       value = worldStr,           inline = true  },
+            { name = "⏱ Uptime",      value = uptimeStr,          inline = true  },
+            { name = "🔁 Cycle 1 Time",value = cycle1Str,          inline = true  },
+            { name = "🌱 Seeds",       value = tostring(seeds),    inline = true  },
+            { name = "🧱 Blocks",      value = tostring(blocks),   inline = true  },
+            { name = "💎 Drop Item",   value = tostring(drops),    inline = true  },
+        }
+
+        whRequest({
+            content = contentMsg,
+            embeds  = {{
+                title     = "📋 Multi Farm Rotation Logs",
+                color     = embedColor,
+                fields    = fields,
+                timestamp = string.format("%d-%02d-%02dT%02d:%02d:%02dZ",
+                    Time.year, Time.month, Time.day, Time.hour, Time.min, Time.sec),
+                footer    = { text = "MFRot v1.0  •  Job: "..tostring(game.JobId):sub(1,8) },
+            }},
+            allowed_mentions = { parse = { "everyone" } },
+        })
+    end)
+end
+
+-- ════════════════════════════════════════════════════════════════
 --  WHITELIST
 -- ════════════════════════════════════════════════════════════════
 local whitelist = { "54321_jaymes" }
@@ -1594,10 +1697,31 @@ local function RunCycle()
 
     cycleCount = 0
 
+    -- Webhook: record start time and send initial ping
+    whStartTime    = tick()
+    whCycle1Start  = nil
+    whCycle1End    = nil
+    whCurrentWorld = ""
+    whSend("🚀 Farm started")
+
+    -- ── Webhook: 10-minute periodic update loop ───────────────────
+    task.spawn(function()
+        while isRunning and not inst.dead do
+            task.wait(WH_GENERAL_INTERVAL)
+            if not isRunning or inst.dead then break end
+            local rawStatus = ""
+            pcall(function() rawStatus = statusLabel and statusLabel.Text or "" end)
+            whSend("⏱ General Update — " .. rawStatus)
+        end
+    end)
+
     while guard() do
         cycleCount += 1
         local numWorlds = #worldList
         local loopStart = (cycleCount == 1) and currentWorldIdx or 1
+
+        -- Webhook: mark cycle 1 start time
+        if cycleCount == 1 then whCycle1Start = tick() end
 
         for wi = loopStart, numWorlds do
             if not guard() then break end
@@ -1685,6 +1809,8 @@ local function RunCycle()
 
                     if not skipHarvest then
                         currentPhase = "harvesting"; SaveProgress(true)
+                        whCurrentWorld = farmWorld
+                        whSend("🌾 Harvesting — world ["..wi.."/"..numWorlds.."] "..farmWorld)
                         SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — HARVEST",
                             Color3.fromRGB(255, 200, 80))
                         local ok = RunHarvest(guard, resumeHarvestY)
@@ -1697,6 +1823,7 @@ local function RunCycle()
 
                     if not skipBreak then
                         currentPhase = "breaking"; SaveProgress(true)
+                        whSend("⛏ Breaking — world ["..wi.."/"..numWorlds.."] "..farmWorld.." ("..GetTotalByCode(CFG.breakItem).." blocks)")
                         SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
                             Color3.fromRGB(220, 150, 50))
                         local ok = RunBreak(guard)
@@ -1708,6 +1835,7 @@ local function RunCycle()
 
                     if not skipPlant then
                         currentPhase = "planting"; SaveProgress(true)
+                        whSend("🌱 Planting — world ["..wi.."/"..numWorlds.."] "..farmWorld.." ("..GetTotalByCode(CFG.plantItem).." seeds)")
                         SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — PLANT",
                             Color3.fromRGB(85, 215, 110))
                         local ok = RunPlant(guard, resumePlantY)
@@ -1739,6 +1867,8 @@ local function RunCycle()
                     if not guard() then break end
 
                     currentPhase = "dropping"; SaveProgress(true, true)
+                    whCurrentWorld = storageWorld
+                    whSend("📦 Dropping — storage world: "..storageWorld.." (after world "..wi.."/"..numWorlds..")")
                     SetStatus("STORAGE — DROP [world " .. wi .. "/" .. numWorlds .. "]",
                         Color3.fromRGB(255, 180, 60))
                     RunDrop(guard)
@@ -1750,6 +1880,11 @@ local function RunCycle()
         currentWorldIdx = 1
         currentRowY     = FARM_TOP_Y
         currentPhase    = "harvesting"
+        -- Webhook: record cycle 1 total time on first completion
+        if cycleCount == 1 and not whCycle1End then
+            whCycle1End = tick()
+        end
+        whSend("✅ Cycle #"..cycleCount.." complete — all "..#worldList.." worlds done")
         SetStatus("CYCLE #" .. cycleCount .. " complete — restarting", Color3.fromRGB(150, 255, 180))
         task.wait(1)
     end
@@ -1761,6 +1896,7 @@ local function RunCycle()
     end
     stopAll()
     ClearAutoResume()
+    whSend("🛑 Farm stopped — ran "..cycleCount.." cycle(s)")
     SetStatus("[ STOPPED ] Cycle complete", Color3.fromRGB(255, 100, 100))
 end
 
