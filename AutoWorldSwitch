@@ -943,6 +943,7 @@ local function RunHarvest(guardFn, resumeRowY)
                 Color3.fromRGB(255,200,80))
             lr = tick(); startMoveRight()
             while guardFn() do
+                if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
                 if iy2 and iy2 < rowY then
                     stopAll(); climbToY(rowY, guardFn); if not guardFn() then return false end
@@ -960,6 +961,7 @@ local function RunHarvest(guardFn, resumeRowY)
                 hFire(ix, rowY)
                 task.wait(0.01)
             end
+            if _G._MFRot_SkipHarvest then _G._MFRot_SkipHarvest=nil; stopAll(); SetStatus("TEST: Harvest skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
             stopAll(); if not guardFn() then return false end
 
             -- ── Phase 2: sweep LEFT firing belowY ───────────────
@@ -969,6 +971,7 @@ local function RunHarvest(guardFn, resumeRowY)
             lr = tick(); startMoveLeft()
             local fellEarlyP2 = false
             while guardFn() do
+                if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
                 if iy2 and iy2 < rowY then
                     if ix <= 3 then break end
@@ -985,6 +988,7 @@ local function RunHarvest(guardFn, resumeRowY)
                 if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
                 task.wait(0.01)
             end
+            if _G._MFRot_SkipHarvest then _G._MFRot_SkipHarvest=nil; stopAll(); SetStatus("TEST: Harvest skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
             stopAll(); if not guardFn() then return false end
 
             -- Redo sweep if we fell off early
@@ -1104,6 +1108,7 @@ local function RunHarvest(guardFn, resumeRowY)
                 Color3.fromRGB(220,160,60))
             lr = tick(); startMoveRight()
             while guardFn() do
+                if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
                 if iy2 and iy2 < rowY then
                     if ix >= TRAV_RIGHT-2 then stopAll(); break end
@@ -1122,6 +1127,7 @@ local function RunHarvest(guardFn, resumeRowY)
                 if belowY >= FARM_BOT_Y then hFire(ix, belowY) end
                 task.wait(0.01)
             end
+            if _G._MFRot_SkipHarvest then _G._MFRot_SkipHarvest=nil; stopAll(); SetStatus("TEST: Harvest skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
             stopAll(); if not guardFn() then return false end
 
             local res, _ = handleBoundary(true, guardFn, FARM_TOP_Y)
@@ -1204,6 +1210,7 @@ local function RunPlant(guardFn, resumeRowY)
         if sweepRight then startMoveRight() else startMoveLeft() end
 
         while guardFn() do
+            if _G._MFRot_SkipPlant then stopAll(); break end
             local ix, iy2 = GetTileIndex(); if not ix then task.wait(0.01); continue end
 
             -- Fell off row — climb back and resume from where we were
@@ -1281,6 +1288,7 @@ local function RunPlant(guardFn, resumeRowY)
             end
             task.wait(0.01)
         end
+        if _G._MFRot_SkipPlant then _G._MFRot_SkipPlant=nil; stopAll(); SetStatus("TEST: Plant skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
         stopAll(); if not guardFn() then return false end
 
         -- Navigate to next row (climb up 2 units)
@@ -1428,6 +1436,7 @@ local function RunBreak(guardFn)
         -- ── PLACE phase ──────────────────────────────────────────
         local placeFires = 0
         while guardFn() do
+            if _G._MFRot_SkipBreak then stopAll(); break end
             local slotN = FindSlotByCode(CFG.breakItem)
             if not slotN then
                 -- Inventory empty mid-place — done
@@ -1447,12 +1456,14 @@ local function RunBreak(guardFn)
         SetStatus("BREAK pass " .. passNum .. " | FIST",
             Color3.fromRGB(220, 150, 50))
         while guardFn() do
+            if _G._MFRot_SkipBreak then stopAll(); break end
             fstR:FireServer(targetPos)
             task.wait(PNB_FIRE_SPD)
             breakFires += 1
             if not wTE(ix, iy) then break end            -- tile confirmed cleared
             if breakFires >= PNB_MAX_BREAK then break end -- safety cap
         end
+        if _G._MFRot_SkipBreak then _G._MFRot_SkipBreak=nil; breakRunning=false; SetStatus("TEST: Break skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
         if not guardFn() then return false end
     end
 
