@@ -28,7 +28,7 @@ local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 local RunSvc  = game:GetService("RunService")
 local UIS     = game:GetService("UserInputService")
-local VIM     = game:GetService("VirtualInputManager")
+local VIM     = pcall(game.GetService, game, "VirtualInputManager") and game:GetService("VirtualInputManager") or nil
 local HttpSvc = game:GetService("HttpService")
 local player  = Players.LocalPlayer
 local gui     = player:WaitForChild("PlayerGui")
@@ -70,6 +70,7 @@ do
         -- Read pending world
         local target = ""
         pcall(function()
+            if not readfile then return end
             local c = readfile("craftaworld/pending_world.txt")
             local t = c and c:match("^%s*(.-)%s*$")
             if t and t ~= "" then target = t end
@@ -154,7 +155,8 @@ do
         -- from_switch.txt stores the world name written by joinWorld()
         local switchedWorld = ""
         pcall(function()
-            if isfile and isfile("craftaworld/from_switch.txt") then
+            if not isfile or not readfile or not writefile then return end
+            if isfile("craftaworld/from_switch.txt") then
                 local raw = readfile("craftaworld/from_switch.txt")
                 local w = raw and raw:match("^%s*(.-)%s*$") or ""
                 if w ~= "" then switchedWorld = w end
@@ -302,6 +304,7 @@ end
 local function LoadWL()
     local ok, d = pcall(function()
         if isfile and isfile(WL_FILE) then
+            if not readfile then return nil end
             return HttpSvc:JSONDecode(readfile(WL_FILE))
         end
     end)
@@ -403,6 +406,7 @@ end
 local function LoadAllSaves()
     local ok, d = pcall(function()
         if isfile and isfile(SAVE_FILE) then
+            if not readfile then return nil end
             return HttpSvc:JSONDecode(readfile(SAVE_FILE))
         end
     end)
@@ -525,14 +529,14 @@ end
 local function joinWorld(worldName)
     if not worldName or worldName == "" then return end
     SetStatus("SWITCH → " .. worldName, Color3.fromRGB(180, 180, 255))
-    pcall(makefolder, DATA_FOLDER)
+    pcall(function() if makefolder then makefolder(DATA_FOLDER) end end)
     -- Write target so the lobby server knows which world to join
-    pcall(function() writefile(DATA_FILE, worldName) end)
+    pcall(function() if writefile then writefile(DATA_FILE, worldName) end end)
     -- Write the world NAME into from_switch.txt so the world server
     -- can set _G._MFRot_JoinedWorld correctly on next load
     pcall(function()
-        makefolder("craftaworld")
-        writefile("craftaworld/from_switch.txt", worldName)
+        if makefolder then makefolder("craftaworld") end
+        if writefile then writefile("craftaworld/from_switch.txt", worldName) end
     end)
 
     if isInLobby() then
@@ -726,8 +730,8 @@ end
 --  STEP 2 · MOVEMENT HELPERS
 -- ════════════════════════════════════════════════════════════════
 
-local function pressKey(k)    VIM:SendKeyEvent(true,  k, false, game) end
-local function releaseKey(k)  VIM:SendKeyEvent(false, k, false, game) end
+local function pressKey(k)    if VIM then pcall(function() VIM:SendKeyEvent(true,  k, false, game) end) end end
+local function releaseKey(k)  if VIM then pcall(function() VIM:SendKeyEvent(false, k, false, game) end) end end
 local function startMoveRight() releaseKey(Enum.KeyCode.D); task.wait(0.01); pressKey(Enum.KeyCode.D) end
 local function startMoveLeft()  releaseKey(Enum.KeyCode.A); task.wait(0.01); pressKey(Enum.KeyCode.A) end
 local function stopAll()
