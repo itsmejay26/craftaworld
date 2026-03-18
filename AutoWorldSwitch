@@ -1004,7 +1004,18 @@ local function RunHarvest(guardFn, resumeRowY)
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex()
                 if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then stopAll(); break end
+                if iy2 and iy2 < rowY then
+                    -- Fell off — if near left edge it was natural, otherwise climb back
+                    if ix <= 3 then stopAll(); break end
+                    stopAll()
+                    SetStatus("RECOVER← Y="..rowY, Color3.fromRGB(255,160,60))
+                    local fallX = ix
+                    local side = (fallX <= 50) and JMP_LEFT or JMP_RIGHT
+                    walkToX(side, guardFn); if not guardFn() then return false end
+                    climbToY(rowY, guardFn); if not guardFn() then return false end
+                    walkToX(math.max(fallX - 1, JMP_LEFT), guardFn); if not guardFn() then return false end
+                    lr = tick(); startMoveLeft(); continue
+                end
                 if ix <= TRAV_LEFT then stopAll(); break end
                 local mX, mY = getMiss()
                 if mX then
@@ -1077,7 +1088,18 @@ local function RunHarvest(guardFn, resumeRowY)
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy2 = GetTileIndex()
                 if not ix then task.wait(0.01); continue end
-                if iy2 and iy2 < rowY then stopAll(); break end
+                if iy2 and iy2 < rowY then
+                    -- Fell off — if near right edge it was natural, otherwise climb back
+                    if ix >= TRAV_RIGHT - 2 then stopAll(); break end
+                    stopAll()
+                    SetStatus("RECOVER→ Y="..rowY, Color3.fromRGB(255,160,60))
+                    local fallX = ix
+                    local side = (fallX <= 50) and JMP_LEFT or JMP_RIGHT
+                    walkToX(side, guardFn); if not guardFn() then return false end
+                    climbToY(rowY, guardFn); if not guardFn() then return false end
+                    walkToX(math.min(fallX + 1, TRAV_RIGHT), guardFn); if not guardFn() then return false end
+                    lr = tick(); startMoveRight(); continue
+                end
                 if ix >= TRAV_RIGHT then stopAll(); break end
                 local mX, mY = getMiss()
                 if mX then
