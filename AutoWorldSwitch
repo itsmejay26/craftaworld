@@ -222,10 +222,14 @@ local growTime         = 75360
 local CFG = {
     plantItem    = nil,
     breakItem    = nil,
-    dropItem     = nil,
     plantItemKey = nil,
     breakItemKey = nil,
-    dropItemKey  = nil,
+    -- dropList: array of { code, key, dropAmt, unstackable }
+    --   code        = session integer code (from GetCode)
+    --   key         = raw fingerprint string (stable across restarts)
+    --   dropAmt     = how many to drop per fire (1-200; use 1 for unstackable)
+    --   unstackable = true means drop 1 by 1 until inventory is clear
+    dropList     = {},
 }
 
 local resumeEnabled    = false
@@ -424,10 +428,24 @@ local function whSend(phase)
             local pingMs  = whGetPingMs()
             local isOnline = pingMs > 0
 
-            -- Safe inventory reads — these locals are in scope now
+            -- Safe inventory reads
             local seeds  = CFG.plantItem and GetTotalByCode(CFG.plantItem) or 0
             local blocks = CFG.breakItem and GetTotalByCode(CFG.breakItem) or 0
-            local drops  = CFG.dropItem  and GetTotalByCode(CFG.dropItem)  or 0
+
+            -- Gems from GemsUI
+            local gems = "N/A"
+            pcall(function()
+                gems = player.PlayerGui.GemsUI.Frame.TextLabel.Text
+            end)
+
+            -- Build a drop summary: "ItemCode x123, ItemCode x45"
+            local dropParts = {}
+            for _, entry in ipairs(CFG.dropList) do
+                local qty = GetTotalByCode(entry.code)
+                table.insert(dropParts, "["..entry.code.."] x"..qty
+                    ..(entry.unstackable and " (1×1)" or " (×"..entry.dropAmt..")"))
+            end
+            local dropsStr = #dropParts > 0 and table.concat(dropParts, "\n") or "None set"
 
             local pingStr    = isOnline and (pingMs.."ms") or "N/A"
             local botStatus  = isOnline and "🟢 Online"    or "🔴 Offline"
@@ -459,7 +477,8 @@ local function whSend(phase)
                         { name = "🔁 Cycle 1 Time", value = cycle1Str,       inline = true  },
                         { name = "🌱 Seeds",        value = tostring(seeds), inline = true  },
                         { name = "🧱 Blocks",       value = tostring(blocks),inline = true  },
-                        { name = "💎 Drop Item",    value = tostring(drops), inline = true  },
+                        { name = "💎 Gems",         value = gems,            inline = true  },
+                        { name = "📦 Drop Items",   value = dropsStr,        inline = false },
                     },
                     timestamp = string.format("%d-%02d-%02dT%02d:%02d:%02dZ",
                         Time.year, Time.month, Time.day, Time.hour, Time.min, Time.sec),
@@ -513,7 +532,18 @@ local function SaveProgress(autoResume, sync)
                 whitelist        = wlCopy,
                 plantItemKey     = CFG.plantItemKey or ResolveItemKey(CFG.plantItem),
                 breakItemKey     = CFG.breakItemKey or ResolveItemKey(CFG.breakItem),
-                dropItemKey      = CFG.dropItemKey  or ResolveItemKey(CFG.dropItem),
+                -- Save each drop entry as { key, dropAmt, unstackable }
+                dropList         = (function()
+                    local out = {}
+                    for _, entry in ipairs(CFG.dropList) do
+                        table.insert(out, {
+                            key         = entry.key or ResolveItemKey(entry.code),
+                            dropAmt     = entry.dropAmt,
+                            unstackable = entry.unstackable,
+                        })
+                    end
+                    return out
+                end)(),
                 timestamp        = os.time(),
                 autoResume       = autoResume == true,
                 userStopped      = _G._MFRot_UserStopped == true,
@@ -562,9 +592,19 @@ local function ApplyPlayerSave(username)
         CFG.breakItemKey = d.breakItemKey
         CFG.breakItem    = GetCode(d.breakItemKey)
     end
-    if d.dropItemKey then
-        CFG.dropItemKey = d.dropItemKey
-        CFG.dropItem    = GetCode(d.dropItemKey)
+    -- Restore multi-drop list
+    if d.dropList and type(d.dropList) == "table" then
+        CFG.dropList = {}
+        for _, entry in ipairs(d.dropList) do
+            if entry.key then
+                table.insert(CFG.dropList, {
+                    key         = entry.key,
+                    code        = GetCode(entry.key),
+                    dropAmt     = entry.dropAmt or 200,
+                    unstackable = entry.unstackable == true,
+                })
+            end
+        end
     end
     if d.userStopped ~= nil then
         _G._MFRot_UserStopped = d.userStopped
@@ -1543,11 +1583,12 @@ end
 --  DROP
 -- ════════════════════════════════════════════════════════════════
 local function RunDrop(guardFn)
-    if not CFG.dropItem then
-        SetStatus("DROP: No drop item set!", Color3.fromRGB(255, 80, 80))
+    if #CFG.dropList == 0 then
+        SetStatus("DROP: No drop items set!", Color3.fromRGB(255, 80, 80))
         return false
     end
 
+    -- Wait for remotes if not loaded yet
     if not playerDropR or not uiPromptR then
         SetStatus("DROP: Waiting for drop remotes...", Color3.fromRGB(220, 180, 80))
         local t = tick()
@@ -1580,54 +1621,90 @@ local function RunDrop(guardFn)
         return guardFn()
     end
 
-    local total = GetTotalByCode(CFG.dropItem)
-    if total <= 0 then
-        SetStatus("DROP: Nothing to drop ✓", Color3.fromRGB(150, 255, 180))
-        return guardFn()
-    end
-
-    SetStatus("DROP: " .. total .. " to drop...", Color3.fromRGB(220, 180, 80))
-
-    local loopGuard = 0
-    while guardFn() do
-        loopGuard += 1
-        if loopGuard > 50 then break end
-
-        local remaining = GetTotalByCode(CFG.dropItem)
-        if remaining <= 0 then
-            SetStatus("DROP: All dropped ✓", Color3.fromRGB(150, 255, 180))
-            break
-        end
-
-        local slotN = FindSlotByCode(CFG.dropItem)
-        if not slotN then
-            SetStatus("DROP: Cleared ✓", Color3.fromRGB(150, 255, 180))
-            break
-        end
-
-        local dropAmt = math.min(remaining, MAX_DROP)
-        SetStatus("DROP: " .. remaining .. " left, dropping " .. dropAmt .. "...",
-            Color3.fromRGB(220, 200, 100))
-
-        pcall(function() playerDropR:FireServer(slotN) end)
-        task.wait(0.3)
-        pcall(function()
-            uiPromptR:FireServer({
-                ButtonAction = "drp",
-                Inputs = { amt = tostring(dropAmt) }
-            })
-        end)
-
-        task.wait(DROP_COOLDOWN)
+    -- ── Drop each configured item in order ────────────────────────
+    for di, entry in ipairs(CFG.dropList) do
         if not guardFn() then return false end
-    end
+        local code        = entry.code
+        local dropAmt     = entry.unstackable and 1 or math.clamp(entry.dropAmt or 200, 1, 200)
+        local unstackable = entry.unstackable
 
-    local leftover = GetTotalByCode(CFG.dropItem)
-    if leftover > 0 then
-        SetStatus("DROP: " .. leftover .. " remain — retrying once...",
-            Color3.fromRGB(255, 180, 80))
-        task.wait(1)
-        if guardFn() then return RunDrop(guardFn) end
+        local total = GetTotalByCode(code)
+        if total <= 0 then
+            SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Nothing to drop ✓",
+                Color3.fromRGB(150, 255, 180))
+            task.wait(0.3)
+        else
+            SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: "..total.." to drop"
+                ..(unstackable and " (1×1)" or " (×"..dropAmt..")").."...",
+                Color3.fromRGB(220, 180, 80))
+
+            local loopGuard = 0
+            local maxLoops  = unstackable and (total + 20) or 60
+
+            while guardFn() do
+                loopGuard += 1
+                if loopGuard > maxLoops then break end
+
+                local remaining = GetTotalByCode(code)
+                if remaining <= 0 then
+                    SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: All dropped ✓",
+                        Color3.fromRGB(150, 255, 180))
+                    break
+                end
+
+                local slotN = FindSlotByCode(code)
+                if not slotN then
+                    SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Cleared ✓",
+                        Color3.fromRGB(150, 255, 180))
+                    break
+                end
+
+                local thisAmt = unstackable and 1 or math.min(remaining, dropAmt)
+                SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: "..remaining.." left, dropping "..thisAmt.."...",
+                    Color3.fromRGB(220, 200, 100))
+
+                pcall(function() playerDropR:FireServer(slotN) end)
+                task.wait(0.3)
+                pcall(function()
+                    uiPromptR:FireServer({
+                        ButtonAction = "drp",
+                        Inputs = { amt = tostring(thisAmt) }
+                    })
+                end)
+
+                -- Unstackable items need a shorter cooldown for 1-by-1 speed
+                task.wait(unstackable and 0.5 or DROP_COOLDOWN)
+                if not guardFn() then return false end
+            end
+
+            -- One retry if anything is left
+            local leftover = GetTotalByCode(code)
+            if leftover > 0 and not unstackable then
+                SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: "..leftover.." remain — retrying...",
+                    Color3.fromRGB(255, 180, 80))
+                task.wait(1)
+                -- Re-run just this single entry via a tiny inline loop
+                if guardFn() then
+                    local sg = 0
+                    while guardFn() and sg < 10 do
+                        sg += 1
+                        local r2 = GetTotalByCode(code)
+                        if r2 <= 0 then break end
+                        local sn = FindSlotByCode(code)
+                        if not sn then break end
+                        pcall(function() playerDropR:FireServer(sn) end)
+                        task.wait(0.3)
+                        pcall(function()
+                            uiPromptR:FireServer({
+                                ButtonAction = "drp",
+                                Inputs = { amt = tostring(math.min(r2, dropAmt)) }
+                            })
+                        end)
+                        task.wait(DROP_COOLDOWN)
+                    end
+                end
+            end
+        end
     end
 
     return guardFn()
@@ -1674,8 +1751,8 @@ local function RunCycle()
         SetStatus("Apply BREAK item first!", Color3.fromRGB(255, 80, 80))
         isRunning = false; return
     end
-    if not CFG.dropItem then
-        SetStatus("Apply DROP item first!", Color3.fromRGB(255, 80, 80))
+    if #CFG.dropList == 0 then
+        SetStatus("Apply at least 1 DROP item first!", Color3.fromRGB(255, 80, 80))
         isRunning = false; return
     end
 
@@ -1734,7 +1811,12 @@ local function RunCycle()
     while guard() do
         cycleCount += 1
         local numWorlds = #worldList
-        local loopStart = (cycleCount == 1) and currentWorldIdx or 1
+        -- Always start from the user-selected world.
+        -- Cycle 1 uses currentWorldIdx (which = startWorldIdx when not resuming,
+        -- or the saved world when resuming). Cycle 2+ also starts from startWorldIdx
+        -- so the rotation 5→6→7... wraps back to 5 on the next full cycle,
+        -- matching whatever world the user selected in the list.
+        local loopStart = (cycleCount == 1) and currentWorldIdx or startWorldIdx
 
         -- Webhook: mark cycle 1 start time
         if cycleCount == 1 then whCycle1Start = tick() end
@@ -2148,36 +2230,208 @@ Div()
 Cap("HIGHLIGHTED IN INVENTORY")
 local hlLbl = InfoRow("Selected: --")
 
-local plantItemLbl, breakItemLbl, dropItemLbl
+local plantItemLbl, breakItemLbl
 
 do
-    Btn("APPLY PLANT", 0, 0.32, Color3.fromRGB(40, 120, 65), function()
+    Btn("APPLY PLANT", 0, 0.49, Color3.fromRGB(40, 120, 65), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
         CFG.plantItemKey = k
         CFG.plantItem    = GetCode(k)
         SetStatus("Plant set: " .. CFG.plantItem, Color3.fromRGB(85, 210, 115))
     end)
-    Btn("APPLY BREAK", 0.34, 0.32, Color3.fromRGB(160, 100, 30), function()
+    Btn("APPLY BREAK", 0.51, 0.49, Color3.fromRGB(160, 100, 30), function()
         if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
         local k = GetSlotKey(lastSelSlot); if not k then return end
         CFG.breakItemKey = k
         CFG.breakItem    = GetCode(k)
         SetStatus("Break set: " .. CFG.breakItem, Color3.fromRGB(220, 180, 80))
     end)
-    Btn("APPLY DROP", 0.68, 0.32, Color3.fromRGB(130, 70, 160), function()
-        if not lastSelSlot then SetStatus("Highlight an item first!", Color3.fromRGB(255,80,80)); return end
-        local k = GetSlotKey(lastSelSlot); if not k then return end
-        CFG.dropItemKey = k
-        CFG.dropItem    = GetCode(k)
-        SetStatus("Drop set: " .. CFG.dropItem, Color3.fromRGB(200, 130, 255))
-    end)
     Y += 21
 end
 
 plantItemLbl = InfoRow("Plant: NOT SET")
 breakItemLbl = InfoRow("Break: NOT SET")
-dropItemLbl  = InfoRow("Drop:  NOT SET")
+Div()
+
+-- ════════════════════════════════════════════════════════════════
+--  DROP ITEMS  (multi-drop with per-item amount + unstackable mode)
+-- ════════════════════════════════════════════════════════════════
+Cap("DROP ITEMS  (storage world)")
+Inf("Highlight item → ADD DROP ITEM. Each item can be configured separately.")
+
+-- Scrollable list of configured drop items
+local DL_H = 70
+local dropListFrame = Instance.new("ScrollingFrame", scroll)
+dropListFrame.Size               = UDim2.new(1, 0, 0, DL_H)
+dropListFrame.Position           = UDim2.new(0, 0, 0, Y)
+dropListFrame.BackgroundColor3   = Color3.fromRGB(18, 28, 22)
+dropListFrame.BorderSizePixel    = 0
+dropListFrame.ScrollBarThickness = 3
+dropListFrame.ScrollBarImageColor3 = Color3.fromRGB(60, 120, 70)
+dropListFrame.CanvasSize         = UDim2.new(0, 0, 0, 0)
+dropListFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+mkCorner(dropListFrame, 5); mkStroke(dropListFrame, Color3.fromRGB(45, 75, 50))
+Instance.new("UIPadding", dropListFrame).PaddingLeft = UDim.new(0, 4)
+Y += DL_H + 4
+
+-- forward-declare so ADD button callback can call it
+local RefreshDropList
+
+local function RemoveDropEntry(idx)
+    table.remove(CFG.dropList, idx)
+    RefreshDropList()
+    SetStatus("Drop item removed", Color3.fromRGB(255, 160, 80))
+end
+
+RefreshDropList = function()
+    for _, c in pairs(dropListFrame:GetChildren()) do
+        if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
+    end
+    if #CFG.dropList == 0 then
+        local none = Instance.new("TextLabel", dropListFrame)
+        none.Size = UDim2.new(1, -8, 0, 16); none.Position = UDim2.new(0, 0, 0, 2)
+        none.BackgroundTransparency = 1; none.Text = "No drop items added yet"
+        none.TextColor3 = Color3.fromRGB(100, 130, 110); none.TextSize = 9
+        none.Font = Enum.Font.Gotham; none.TextXAlignment = Enum.TextXAlignment.Left
+        dropListFrame.CanvasSize = UDim2.new(0, 0, 0, 20); return
+    end
+    local rowH = 22
+    for i, entry in ipairs(CFG.dropList) do
+        local rowF = Instance.new("Frame", dropListFrame)
+        rowF.Size             = UDim2.new(1, -8, 0, rowH - 2)
+        rowF.Position         = UDim2.new(0, 0, 0, (i-1)*rowH)
+        rowF.BackgroundColor3 = Color3.fromRGB(28, 40, 32)
+        rowF.BorderSizePixel  = 0
+        mkCorner(rowF, 3)
+
+        -- Item label
+        local qty = GetTotalByCode(entry.code)
+        local modeStr = entry.unstackable and "1×1" or ("×"..entry.dropAmt)
+        local lbl = Instance.new("TextLabel", rowF)
+        lbl.Size             = UDim2.new(1, -52, 1, 0)
+        lbl.Position         = UDim2.new(0, 4, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text             = "["..entry.code.."] x"..qty.."  ("..modeStr..")"
+        lbl.TextColor3       = Color3.fromRGB(170, 230, 190)
+        lbl.TextSize         = 9; lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment   = Enum.TextXAlignment.Left
+        lbl.TextTruncate     = Enum.TextTruncate.AtEnd
+
+        -- Toggle unstackable button
+        local toggleBtn = Instance.new("TextButton", rowF)
+        toggleBtn.Size             = UDim2.new(0, 24, 0, 16)
+        toggleBtn.Position         = UDim2.new(1, -50, 0.5, -8)
+        toggleBtn.BackgroundColor3 = entry.unstackable
+            and Color3.fromRGB(160, 90, 30) or Color3.fromRGB(40, 90, 55)
+        toggleBtn.BorderSizePixel  = 0
+        toggleBtn.Text             = entry.unstackable and "1×1" or "STK"
+        toggleBtn.TextColor3       = Color3.new(1,1,1)
+        toggleBtn.TextSize         = 7; toggleBtn.Font = Enum.Font.GothamBold
+        mkCorner(toggleBtn, 3)
+        toggleBtn.MouseButton1Click:Connect(function()
+            entry.unstackable = not entry.unstackable
+            RefreshDropList()
+            SetStatus("Drop ["..entry.code.."]: "..(entry.unstackable and "1×1 mode" or "stack mode"),
+                Color3.fromRGB(200, 180, 255))
+        end)
+
+        -- Remove button
+        local remBtn = Instance.new("TextButton", rowF)
+        remBtn.Size             = UDim2.new(0, 22, 0, 16)
+        remBtn.Position         = UDim2.new(1, -24, 0.5, -8)
+        remBtn.BackgroundColor3 = Color3.fromRGB(160, 50, 50)
+        remBtn.BorderSizePixel  = 0
+        remBtn.Text             = "✕"
+        remBtn.TextColor3       = Color3.new(1,1,1)
+        remBtn.TextSize         = 10; remBtn.Font = Enum.Font.GothamBold
+        mkCorner(remBtn, 3)
+        local capturedI = i
+        remBtn.MouseButton1Click:Connect(function()
+            RemoveDropEntry(capturedI)
+        end)
+    end
+    dropListFrame.CanvasSize = UDim2.new(0, 0, 0, #CFG.dropList * rowH + 4)
+end
+RefreshDropList()
+
+-- Amount stepper row (for next item to add — shown before adding)
+local dropAmtValue = 200
+do
+    -- Amount stepper
+    local amtFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
+    mkCorner(amtFrame, 5); mkStroke(amtFrame, Color3.fromRGB(45, 75, 55))
+
+    local amtLbl = Instance.new("TextLabel", amtFrame)
+    amtLbl.Size = UDim2.new(0.45, 0, 1, 0); amtLbl.Position = UDim2.new(0, 6, 0, 0)
+    amtLbl.BackgroundTransparency = 1
+    amtLbl.Text = "Drop amount:"
+    amtLbl.TextColor3 = Color3.fromRGB(130, 175, 145); amtLbl.TextSize = 8
+    amtLbl.Font = Enum.Font.Gotham; amtLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local minusBtn = Instance.new("TextButton", amtFrame)
+    minusBtn.Size = UDim2.new(0, 18, 0, 16); minusBtn.Position = UDim2.new(0.52, 0, 0.5, -8)
+    minusBtn.BackgroundColor3 = Color3.fromRGB(140, 60, 60); minusBtn.BorderSizePixel = 0
+    minusBtn.Text = "−"; minusBtn.TextColor3 = Color3.new(1,1,1)
+    minusBtn.TextSize = 12; minusBtn.Font = Enum.Font.GothamBold
+    mkCorner(minusBtn, 3)
+
+    local amtValLbl = Instance.new("TextLabel", amtFrame)
+    amtValLbl.Size = UDim2.new(0, 36, 1, 0); amtValLbl.Position = UDim2.new(0.52, 20, 0, 0)
+    amtValLbl.BackgroundTransparency = 1
+    amtValLbl.Text = "200"
+    amtValLbl.TextColor3 = Color3.fromRGB(180, 255, 200); amtValLbl.TextSize = 9
+    amtValLbl.Font = Enum.Font.GothamBold
+
+    local plusBtn = Instance.new("TextButton", amtFrame)
+    plusBtn.Size = UDim2.new(0, 18, 0, 16); plusBtn.Position = UDim2.new(0.52, 58, 0.5, -8)
+    plusBtn.BackgroundColor3 = Color3.fromRGB(45, 130, 65); plusBtn.BorderSizePixel = 0
+    plusBtn.Text = "+"; plusBtn.TextColor3 = Color3.new(1,1,1)
+    plusBtn.TextSize = 12; plusBtn.Font = Enum.Font.GothamBold
+    mkCorner(plusBtn, 3)
+
+    local steps = {1, 5, 10, 25, 50, 100, 200}
+    minusBtn.MouseButton1Click:Connect(function()
+        for i = #steps, 1, -1 do
+            if steps[i] < dropAmtValue then
+                dropAmtValue = steps[i]; amtValLbl.Text = tostring(dropAmtValue); return
+            end
+        end
+        dropAmtValue = 1; amtValLbl.Text = "1"
+    end)
+    plusBtn.MouseButton1Click:Connect(function()
+        for _, s in ipairs(steps) do
+            if s > dropAmtValue then
+                dropAmtValue = s; amtValLbl.Text = tostring(dropAmtValue); return
+            end
+        end
+        dropAmtValue = 200; amtValLbl.Text = "200"
+    end)
+    Y += 24
+end
+
+-- ADD DROP ITEM button
+Btn("+ ADD DROP ITEM  (highlight first)", 0, 1, Color3.fromRGB(100, 50, 160), function()
+    if not lastSelSlot then SetStatus("Highlight an item in inventory first!", Color3.fromRGB(255,80,80)); return end
+    local k = GetSlotKey(lastSelSlot); if not k then return end
+    local code = GetCode(k)
+    -- Prevent duplicate
+    for _, entry in ipairs(CFG.dropList) do
+        if entry.code == code then
+            SetStatus("That item is already in the drop list!", Color3.fromRGB(255, 160, 80)); return
+        end
+    end
+    table.insert(CFG.dropList, {
+        code        = code,
+        key         = k,
+        dropAmt     = dropAmtValue,
+        unstackable = false,
+    })
+    RefreshDropList()
+    SetStatus("Drop item added: " .. code .. "  ×" .. dropAmtValue, Color3.fromRGB(200, 130, 255))
+end)
+Y += 21
+Inf("Toggle STK/1×1 per item. STK = stackable (uses drop amount). 1×1 = drop one at a time.")
 Div()
 
 -- SECTION 2 · FARM WORLD LIST
@@ -2502,11 +2756,8 @@ startBtn.MouseButton1Click:Connect(function()
                     and ("Break: " .. keyName(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
                     or "Break: NOT SET"
             end
-            if dropItemLbl then
-                dropItemLbl.Text = CFG.dropItem
-                    and ("Drop:  " .. keyName(CFG.dropItemKey) .. "  x" .. GetTotalByCode(CFG.dropItem))
-                    or "Drop:  NOT SET"
-            end
+            -- Refresh drop list display after restore
+            pcall(RefreshDropList)
             if storageInput and storageWorld ~= "" then
                 storageInput.Text = storageWorld
             end
@@ -2529,8 +2780,8 @@ startBtn.MouseButton1Click:Connect(function()
         SetStatus("Apply PLANT item!", Color3.fromRGB(255, 80, 80)); return end
     if not CFG.breakItem then
         SetStatus("Apply BREAK item!", Color3.fromRGB(255, 80, 80)); return end
-    if not CFG.dropItem then
-        SetStatus("Apply DROP item!", Color3.fromRGB(255, 80, 80)); return end
+    if #CFG.dropList == 0 then
+        SetStatus("Add at least 1 DROP item!", Color3.fromRGB(255, 80, 80)); return end
 
     isPaused = false; isRunning = true
     pauseBtn.Text             = "⏸ PAUSE"
@@ -2558,6 +2809,10 @@ stopBtn.MouseButton1Click:Connect(function()
         pauseBtn.Text             = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
+    -- Reset resume flag so next manual START always uses the selected world,
+    -- not the last saved world from a previous run or auto-resume.
+    resumeEnabled = false
+    if setResumeEnabled then setResumeEnabled(false) end
     _G._MFRot_UserStopped = true
     pcall(function()
         local all = LoadAllSaves()
@@ -2634,9 +2889,9 @@ task.spawn(function()
             breakItemLbl.Text = "Break: " .. CFG.breakItem
                 .. "  x" .. GetTotalByCode(CFG.breakItem)
         end
-        if CFG.dropItem and dropItemLbl then
-            dropItemLbl.Text  = "Drop:  " .. CFG.dropItem
-                .. "  x" .. GetTotalByCode(CFG.dropItem)
+        -- Refresh drop list counts live
+        if RefreshDropList then
+            pcall(RefreshDropList)
         end
         task.wait(0.5)
     end
@@ -2725,17 +2980,14 @@ task.spawn(function()
             and ("Break: " .. _kn(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
             or "Break: NOT SET"
     end
-    if dropItemLbl then
-        dropItemLbl.Text = CFG.dropItem
-            and ("Drop:  " .. _kn(CFG.dropItemKey) .. "  x" .. GetTotalByCode(CFG.dropItem))
-            or "Drop:  NOT SET"
-    end
+    -- Refresh drop list display after restore
+    pcall(RefreshDropList)
     if storageInput then storageInput.Text = storageWorld end
     RefreshWorldList()
 
     task.wait(1)
 
-    if not CFG.plantItem or not CFG.breakItem or not CFG.dropItem then
+    if not CFG.plantItem or not CFG.breakItem or #CFG.dropList == 0 then
         isMinimized = false
         if main then main.Size = UDim2.new(0, WIN_SIZE, 0, WIN_FULL) end
         if scroll then scroll.Visible = true end
@@ -2756,6 +3008,7 @@ task.spawn(function()
         Color3.fromRGB(180, 220, 255))
 
     resumeEnabled = true
+    if setResumeEnabled then setResumeEnabled(true) end
     resumeTarget  = currentPlayerName
 
     isPaused = false; isRunning = true
