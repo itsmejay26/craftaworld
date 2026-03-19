@@ -336,6 +336,21 @@ local function FindSlotByCode(code)
         if c == code and a > 0 then return n end
     end
 end
+-- SlotExistsByCode: like FindSlotByCode but does NOT require amount > 0.
+-- Used for unstackable items which show no amount text when only 1 is held.
+local function SlotExistsByCode(code)
+    if not code then return false end
+    for _, slot in pairs(invScroll:GetChildren()) do
+        if tonumber(slot.Name) then
+            local k = GetSlotKey(slot)
+            if k and GetCode(k) == code then
+                -- ItemDisplay must exist (slot is occupied)
+                if slot:FindFirstChild("ItemDisplay") then return true end
+            end
+        end
+    end
+    return false
+end
 local function GetTotalByCode(code)
     if not code then return 0 end
     local tot = 0
@@ -1629,6 +1644,8 @@ local function RunDrop(guardFn)
         local unstackable = entry.unstackable
 
         local total = GetTotalByCode(code)
+        -- Unstackable single-item has no amount text; slot existence = 1 in inventory
+        if unstackable and total == 0 and SlotExistsByCode(code) then total = 1 end
         if total <= 0 then
             SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Nothing to drop ✓",
                 Color3.fromRGB(150, 255, 180))
@@ -1645,7 +1662,16 @@ local function RunDrop(guardFn)
                 loopGuard += 1
                 if loopGuard > maxLoops then break end
 
-                local remaining = GetTotalByCode(code)
+                -- For unstackable items with qty=1, amount text is absent so
+                -- GetTotalByCode returns 0 even though 1 item remains.
+                -- Use SlotExistsByCode as the ground truth for "still has item".
+                local remaining
+                if unstackable then
+                    remaining = GetTotalByCode(code)
+                    if remaining == 0 and SlotExistsByCode(code) then remaining = 1 end
+                else
+                    remaining = GetTotalByCode(code)
+                end
                 if remaining <= 0 then
                     SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: All dropped ✓",
                         Color3.fromRGB(150, 255, 180))
@@ -2308,8 +2334,9 @@ RefreshDropList = function()
         -- Item label
         local qty = GetTotalByCode(entry.code)
         -- Unstackable items with only 1 in inventory show no amount text,
-        -- so GetTotalByCode returns 0. Fall back to slot existence check.
-        if entry.unstackable and qty == 0 and FindSlotByCode(entry.code) then
+        -- so GetTotalByCode returns 0. Use SlotExistsByCode which doesn't
+        -- require an amount label to detect that the slot is occupied.
+        if entry.unstackable and qty == 0 and SlotExistsByCode(entry.code) then
             qty = 1
         end
         local modeStr = entry.unstackable and "1×1" or ("×"..entry.dropAmt)
