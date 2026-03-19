@@ -2753,6 +2753,57 @@ stopBtn.Font             = Enum.Font.GothamBold
 mkCorner(stopBtn, 6)
 Y += 24
 
+-- SECTION 8 · PHASE SKIP (Tester)
+Div()
+Cap("PHASE SKIP")
+Inf("Instantly skip the current phase to the next.")
+
+local function mkSkipBtn(label, xs, w, col, flagName)
+    local b = Instance.new("TextButton", scroll)
+    b.Size             = UDim2.new(w, 0, 0, 20)
+    b.Position         = UDim2.new(xs, 0, 0, Y)
+    b.BackgroundColor3 = col
+    b.BorderSizePixel  = 0
+    b.Text             = label
+    b.TextColor3       = Color3.new(1, 1, 1)
+    b.TextSize         = 8
+    b.Font             = Enum.Font.GothamBold
+    mkCorner(b, 5)
+    local origCol = col
+    b.MouseButton1Click:Connect(function()
+        _G[flagName] = true
+        b.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+        task.wait(0.4)
+        b.BackgroundColor3 = origCol
+    end)
+    return b
+end
+
+mkSkipBtn("⏭ Skip Harvest", 0,    0.49, Color3.fromRGB(160, 120, 30), "_MFRot_SkipHarvest")
+mkSkipBtn("⏭ Skip Break",   0.51, 0.49, Color3.fromRGB(130, 60, 160), "_MFRot_SkipBreak")
+Y += 24
+mkSkipBtn("⏭ Skip Plant",   0,    0.49, Color3.fromRGB(40, 120, 60),  "_MFRot_SkipPlant")
+
+local skipAllBtn = Instance.new("TextButton", scroll)
+skipAllBtn.Size             = UDim2.new(0.49, 0, 0, 20)
+skipAllBtn.Position         = UDim2.new(0.51, 0, 0, Y)
+skipAllBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+skipAllBtn.BorderSizePixel  = 0
+skipAllBtn.Text             = "⏭ Skip ALL"
+skipAllBtn.TextColor3       = Color3.new(1, 1, 1)
+skipAllBtn.TextSize         = 8
+skipAllBtn.Font             = Enum.Font.GothamBold
+mkCorner(skipAllBtn, 5)
+skipAllBtn.MouseButton1Click:Connect(function()
+    _G._MFRot_SkipHarvest = true
+    _G._MFRot_SkipBreak   = true
+    _G._MFRot_SkipPlant   = true
+    skipAllBtn.BackgroundColor3 = Color3.fromRGB(60, 180, 80)
+    task.wait(0.4)
+    skipAllBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+end)
+Y += 24
+
 scroll.CanvasSize = UDim2.new(0, 0, 0, Y + 14)
 
 -- ════════════════════════════════════════════════════════════════
