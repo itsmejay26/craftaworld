@@ -2030,6 +2030,10 @@ local function RunCycle()
                         Color3.fromRGB(255, 180, 60))
                     RunDrop(guard)
                     if not guard() then break end
+                    -- Reset phase after drop so the NEXT world in the loop doesn't
+                    -- incorrectly read currentPhase="dropping" and skip itself via resumeAtStorage.
+                    currentPhase = "harvesting"
+                    currentRowY  = FARM_TOP_Y
                 end
             end
         end
