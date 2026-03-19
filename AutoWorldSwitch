@@ -351,6 +351,35 @@ local function SlotExistsByCode(code)
     end
     return false
 end
+
+-- FindSlotByCodeAny: like FindSlotByCode but works for unstackable items
+-- that have no amount text (returns the slot number regardless of displayed amount).
+local function FindSlotByCodeAny(code)
+    if not code then return nil end
+    for _, slot in pairs(invScroll:GetChildren()) do
+        local n = tonumber(slot.Name); if not n then continue end
+        local k = GetSlotKey(slot)
+        if k and GetCode(k) == code then
+            if slot:FindFirstChild("ItemDisplay") then return n end
+        end
+    end
+end
+
+-- CountSlotsByCode: counts how many inventory slots contain an item with this code.
+-- Needed for unstackable items where each unit occupies its own slot with no amount text.
+local function CountSlotsByCode(code)
+    if not code then return 0 end
+    local count = 0
+    for _, slot in pairs(invScroll:GetChildren()) do
+        if tonumber(slot.Name) then
+            local k = GetSlotKey(slot)
+            if k and GetCode(k) == code then
+                if slot:FindFirstChild("ItemDisplay") then count += 1 end
+            end
+        end
+    end
+    return count
+end
 local function GetTotalByCode(code)
     if not code then return 0 end
     local tot = 0
@@ -1644,8 +1673,8 @@ local function RunDrop(guardFn)
         local unstackable = entry.unstackable
 
         local total = GetTotalByCode(code)
-        -- Unstackable single-item has no amount text; slot existence = 1 in inventory
-        if unstackable and total == 0 and SlotExistsByCode(code) then total = 1 end
+        -- Unstackable items: no amount text per slot, count occupied slots instead
+        if unstackable then total = CountSlotsByCode(code) end
         if total <= 0 then
             SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Nothing to drop ✓",
                 Color3.fromRGB(150, 255, 180))
@@ -1662,13 +1691,11 @@ local function RunDrop(guardFn)
                 loopGuard += 1
                 if loopGuard > maxLoops then break end
 
-                -- For unstackable items with qty=1, amount text is absent so
-                -- GetTotalByCode returns 0 even though 1 item remains.
-                -- Use SlotExistsByCode as the ground truth for "still has item".
+                -- For unstackable items count occupied slots (no amount text).
+                -- For stackable items use the normal total.
                 local remaining
                 if unstackable then
-                    remaining = GetTotalByCode(code)
-                    if remaining == 0 and SlotExistsByCode(code) then remaining = 1 end
+                    remaining = CountSlotsByCode(code)
                 else
                     remaining = GetTotalByCode(code)
                 end
@@ -1678,7 +1705,8 @@ local function RunDrop(guardFn)
                     break
                 end
 
-                local slotN = FindSlotByCode(code)
+                -- FindSlotByCodeAny works for unstackable (no amount requirement)
+                local slotN = unstackable and FindSlotByCodeAny(code) or FindSlotByCode(code)
                 if not slotN then
                     SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Cleared ✓",
                         Color3.fromRGB(150, 255, 180))
@@ -2338,11 +2366,10 @@ RefreshDropList = function()
 
         -- Item label
         local qty = GetTotalByCode(entry.code)
-        -- Unstackable items with only 1 in inventory show no amount text,
-        -- so GetTotalByCode returns 0. Use SlotExistsByCode which doesn't
-        -- require an amount label to detect that the slot is occupied.
-        if entry.unstackable and qty == 0 and SlotExistsByCode(entry.code) then
-            qty = 1
+        -- Unstackable items show no amount text per slot, so GetTotalByCode
+        -- returns 0 even if many are held. Count occupied slots instead.
+        if entry.unstackable and qty == 0 then
+            qty = CountSlotsByCode(entry.code)
         end
         local modeStr = entry.unstackable and "1×1" or ("×"..entry.dropAmt)
         local lbl = Instance.new("TextLabel", rowF)
