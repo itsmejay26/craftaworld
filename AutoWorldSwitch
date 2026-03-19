@@ -1909,8 +1909,13 @@ local function RunCycle()
                 else
                     SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                         Color3.fromRGB(180, 180, 255))
-                    currentPhase    = "harvesting"
-                    currentRowY     = FARM_TOP_Y
+                    -- Only reset to "harvesting" for a FRESH join (not a mid-cycle resume).
+                    -- If skipHarvest=true, we saved at "breaking" or "planting" — preserve
+                    -- that phase so the auto-start on the new server resumes correctly.
+                    if not skipHarvest then
+                        currentPhase = "harvesting"
+                        currentRowY  = FARM_TOP_Y
+                    end
                     currentWorldIdx = wi
                     SaveProgress(true, true)
                     joinWorld(farmWorld)
