@@ -2307,6 +2307,11 @@ RefreshDropList = function()
 
         -- Item label
         local qty = GetTotalByCode(entry.code)
+        -- Unstackable items with only 1 in inventory show no amount text,
+        -- so GetTotalByCode returns 0. Fall back to slot existence check.
+        if entry.unstackable and qty == 0 and FindSlotByCode(entry.code) then
+            qty = 1
+        end
         local modeStr = entry.unstackable and "1×1" or ("×"..entry.dropAmt)
         local lbl = Instance.new("TextLabel", rowF)
         lbl.Size             = UDim2.new(1, -52, 1, 0)
