@@ -1168,7 +1168,9 @@ local function RunHarvest(guardFn, resumeRowY)
             -- ════════════════════════════════════════════════════
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." → Y="..rowY, Color3.fromRGB(255,200,80))
-            local lr = tick(); startMoveRight()
+            local lr = tick()
+            local lastFallX_A, fallRetries_A = -999, 0
+            startMoveRight()
             while guardFn() do
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
@@ -1176,11 +1178,26 @@ local function RunHarvest(guardFn, resumeRowY)
                 if ix >= JMP_RIGHT then stopAll(); break end
                 if iy and iy ~= rowY then
                     stopAll(); local sx = ix
-                    SetStatus("FWD FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                    -- Track consecutive falls at the same X position.
+                    -- If >= 3 in a row, skip past the stuck tile instead of looping forever.
+                    if math.abs(sx - lastFallX_A) <= 2 then
+                        fallRetries_A += 1
+                    else
+                        fallRetries_A = 1; lastFallX_A = sx
+                    end
+                    local resumeX = (fallRetries_A >= 3)
+                        and math.min(sx + 4, JMP_RIGHT - 1) or sx
+                    if fallRetries_A >= 3 then
+                        SetStatus("FWD SKIP stuck X="..sx.." → "..resumeX, Color3.fromRGB(255,100,50))
+                        fallRetries_A = 0; lastFallX_A = -999
+                    else
+                        SetStatus("FWD FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                    end
                     climbFromCurrentSide(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(sx, guardFn); if not guardFn() then return false end
+                    walkToX(resumeX, guardFn); if not guardFn() then return false end
                     lr = tick(); startMoveRight(); continue
                 end
+                fallRetries_A = 0; lastFallX_A = -999
                 local mX, mY = getMiss()
                 if mX then
                     local rx = GetTileIndex()
@@ -1205,7 +1222,9 @@ local function RunHarvest(guardFn, resumeRowY)
             -- ════════════════════════════════════════════════════
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY, Color3.fromRGB(220,160,60))
-            lr = tick(); startMoveLeft()
+            lr = tick()
+            local lastFallX_B, fallRetries_B = 999, 0
+            startMoveLeft()
             while guardFn() do
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
@@ -1213,11 +1232,24 @@ local function RunHarvest(guardFn, resumeRowY)
                 if ix <= TRAV_LEFT then stopAll(); break end
                 if iy and iy ~= rowY then
                     stopAll(); local sx = ix
-                    SetStatus("REV FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                    if math.abs(sx - lastFallX_B) <= 2 then
+                        fallRetries_B += 1
+                    else
+                        fallRetries_B = 1; lastFallX_B = sx
+                    end
+                    local resumeX = (fallRetries_B >= 3)
+                        and math.max(sx - 4, JMP_LEFT + 1) or sx
+                    if fallRetries_B >= 3 then
+                        SetStatus("REV SKIP stuck X="..sx.." → "..resumeX, Color3.fromRGB(255,100,50))
+                        fallRetries_B = 0; lastFallX_B = 999
+                    else
+                        SetStatus("REV FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                    end
                     climbFromCurrentSide(rowY, guardFn); if not guardFn() then return false end
-                    walkToX(sx, guardFn); if not guardFn() then return false end
+                    walkToX(resumeX, guardFn); if not guardFn() then return false end
                     lr = tick(); startMoveLeft(); continue
                 end
+                fallRetries_B = 0; lastFallX_B = 999
                 local mX, mY = getMiss()
                 if mX then
                     local rx = GetTileIndex()
@@ -1255,7 +1287,9 @@ local function RunHarvest(guardFn, resumeRowY)
                     and ("COLLECT "..ri.."/"..#rows.." → Y="..rowY)
                     or  ("HARVEST "..ri.."/"..#rows.." → belowY="..belowY),
                     isLast and Color3.fromRGB(80,220,255) or Color3.fromRGB(220,160,60))
-                local lr = tick(); startMoveRight()
+                local lr = tick()
+                local lastFallX_F, fallRetries_F = -999, 0
+                startMoveRight()
                 while guardFn() do
                     if _G._MFRot_SkipHarvest then stopAll(); break end
                     local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
@@ -1263,11 +1297,24 @@ local function RunHarvest(guardFn, resumeRowY)
                     if ix >= TRAV_RIGHT then stopAll(); break end
                     if iy and iy ~= rowY then
                         stopAll(); local sx = ix
-                        SetStatus("FWD FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                        if math.abs(sx - lastFallX_F) <= 2 then
+                            fallRetries_F += 1
+                        else
+                            fallRetries_F = 1; lastFallX_F = sx
+                        end
+                        local resumeX = (fallRetries_F >= 3)
+                            and math.min(sx + 4, TRAV_RIGHT - 1) or sx
+                        if fallRetries_F >= 3 then
+                            SetStatus("FWD SKIP stuck X="..sx.." → "..resumeX, Color3.fromRGB(255,100,50))
+                            fallRetries_F = 0; lastFallX_F = -999
+                        else
+                            SetStatus("FWD FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                        end
                         climbFromCurrentSide(rowY, guardFn); if not guardFn() then return false end
-                        walkToX(sx, guardFn); if not guardFn() then return false end
+                        walkToX(resumeX, guardFn); if not guardFn() then return false end
                         lr = tick(); startMoveRight(); continue
                     end
+                    fallRetries_F = 0; lastFallX_F = -999
                     if not isLast then
                         local mX, mY = getMiss()
                         if mX then
@@ -1299,7 +1346,9 @@ local function RunHarvest(guardFn, resumeRowY)
                     and ("COLLECT "..ri.."/"..#rows.." ← Y="..rowY)
                     or  ("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY),
                     isLast and Color3.fromRGB(80,220,255) or Color3.fromRGB(220,160,60))
-                local lr = tick(); startMoveLeft()
+                local lr = tick()
+                local lastFallX_R, fallRetries_R = 999, 0
+                startMoveLeft()
                 while guardFn() do
                     if _G._MFRot_SkipHarvest then stopAll(); break end
                     local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
@@ -1307,11 +1356,24 @@ local function RunHarvest(guardFn, resumeRowY)
                     if ix <= TRAV_LEFT then stopAll(); break end
                     if iy and iy ~= rowY then
                         stopAll(); local sx = ix
-                        SetStatus("REV FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                        if math.abs(sx - lastFallX_R) <= 2 then
+                            fallRetries_R += 1
+                        else
+                            fallRetries_R = 1; lastFallX_R = sx
+                        end
+                        local resumeX = (fallRetries_R >= 3)
+                            and math.max(sx - 4, JMP_LEFT + 1) or sx
+                        if fallRetries_R >= 3 then
+                            SetStatus("REV SKIP stuck X="..sx.." → "..resumeX, Color3.fromRGB(255,100,50))
+                            fallRetries_R = 0; lastFallX_R = 999
+                        else
+                            SetStatus("REV FIX ↑ Y="..rowY, Color3.fromRGB(255,160,60))
+                        end
                         climbFromCurrentSide(rowY, guardFn); if not guardFn() then return false end
-                        walkToX(sx, guardFn); if not guardFn() then return false end
+                        walkToX(resumeX, guardFn); if not guardFn() then return false end
                         lr = tick(); startMoveLeft(); continue
                     end
+                    fallRetries_R = 0; lastFallX_R = 999
                     if not isLast then
                         local mX, mY = getMiss()
                         if mX then
@@ -1395,6 +1457,8 @@ local function RunPlant(guardFn, resumeRowY)
             Color3.fromRGB(85, 215, 110))
 
         local resumeAfterFall = nil
+        local lastFallX_P = sweepRight and -999 or 999
+        local fallRetries_P = 0
         local lr = tick()
         if sweepRight then startMoveRight() else startMoveLeft() end
 
@@ -1405,13 +1469,32 @@ local function RunPlant(guardFn, resumeRowY)
             if iy2 and iy2 ~= rowY then
                 stopAll()
                 local fallX = resumeAfterFall or ix
+                -- Track consecutive falls at same X to detect an infinite loop.
+                if math.abs(fallX - lastFallX_P) <= 2 then
+                    fallRetries_P += 1
+                else
+                    fallRetries_P = 1; lastFallX_P = fallX
+                end
+                local resumeX
+                if fallRetries_P >= 3 then
+                    -- Skip past the stuck tile in the sweep direction
+                    resumeX = sweepRight
+                        and math.min(fallX + 4, TRAV_RIGHT - 1)
+                        or  math.max(fallX - 4, TRAV_LEFT  + 1)
+                    SetStatus("PLANT SKIP stuck X="..fallX.." → "..resumeX, Color3.fromRGB(255,100,50))
+                    fallRetries_P = 0; lastFallX_P = sweepRight and -999 or 999
+                else
+                    resumeX = fallX
+                end
                 goToRowY(rowY, guardFn); if not guardFn() then return false end
-                walkToX(fallX, guardFn); if not guardFn() then return false end
+                walkToX(resumeX, guardFn); if not guardFn() then return false end
                 resumeAfterFall = nil
                 lr = tick()
                 if sweepRight then startMoveRight() else startMoveLeft() end
                 continue
             end
+            -- On correct layer — reset stuck counter
+            fallRetries_P = 0; lastFallX_P = sweepRight and -999 or 999
 
             if sweepRight     and ix >= TRAV_RIGHT then stopAll(); break end
             if not sweepRight and ix <= TRAV_LEFT  then stopAll(); break end
