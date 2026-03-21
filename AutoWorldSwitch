@@ -1948,12 +1948,12 @@ local function RunCycle()
     while guard() do
         cycleCount += 1
         local numWorlds = #worldList
-        -- Always start from the user-selected world.
-        -- Cycle 1 uses currentWorldIdx (which = startWorldIdx when not resuming,
-        -- or the saved world when resuming). Cycle 2+ also starts from startWorldIdx
-        -- so the rotation 5→6→7... wraps back to 5 on the next full cycle,
-        -- matching whatever world the user selected in the list.
-        local loopStart = (cycleCount == 1) and currentWorldIdx or startWorldIdx
+        -- Cycle 1: start from currentWorldIdx (= startWorldIdx for a fresh run,
+        --          or the saved world index when resuming mid-cycle).
+        -- Cycle 2+: ALWAYS restart from world 1 so the full rotation repeats
+        --           correctly regardless of which world was selected as start.
+        --           startWorldIdx only affects the very first run.
+        local loopStart = (cycleCount == 1) and currentWorldIdx or 1
 
         -- Webhook: mark cycle 1 start time
         if cycleCount == 1 then whCycle1Start = tick() end
