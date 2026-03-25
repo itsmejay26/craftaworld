@@ -1146,6 +1146,9 @@ local function RunHarvest(guardFn, resumeRowY)
         local isLast    = (ri == #rows)   -- Y=7, no layer below
         local isAbsFirst = (ri == 1)      -- very first row: double-sweep
         currentRowY = rowY
+        -- Save progress at the start of each row so a disconnect/rejoin
+        -- resumes from this row rather than restarting harvest from the top.
+        SaveProgress(true)
 
         -- ── LAYER VERIFICATION (unconditional) ───────────────────
         local _, curY = GetTileIndex()
@@ -1556,6 +1559,10 @@ local function RunPlant(guardFn, resumeRowY)
         end
         if _G._MFRot_SkipPlant then _G._MFRot_SkipPlant=nil; stopAll(); SetStatus("TEST: Plant skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
         stopAll(); if not guardFn() then return false end
+
+        -- Save progress after each row so a disconnect/rejoin resumes
+        -- from this row rather than restarting planting from the top.
+        SaveProgress(true)
 
         if pi < #plantRows then
             goToRowY(plantRows[pi + 1], guardFn); if not guardFn() then return false end
@@ -1971,7 +1978,9 @@ local function RunCycle()
                 (currentPhase == "planting" or resumeAtStorage)
             local skipPlant   = (cycleCount == 1) and resumeAtStorage
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
-            local resumePlantY   = (cycleCount == 1 and skipBreak and not skipPlant) and currentRowY or nil
+            -- resumePlantY: pass the saved row whenever phase was "planting",
+            -- regardless of whether we also skipped break.
+            local resumePlantY = (cycleCount == 1 and currentPhase == "planting" and not skipPlant) and currentRowY or nil
 
             if cycleCount == 1 and wi > loopStart then
                 skipHarvest    = false; skipBreak = false; skipPlant = false
