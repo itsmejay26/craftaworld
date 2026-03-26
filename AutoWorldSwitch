@@ -1975,10 +1975,12 @@ local function RunCycle()
 
             local resumeAtStorage = (cycleCount == 1) and
                 (currentPhase == "going_storage" or currentPhase == "dropping")
+            -- ── PATCHED: added "going_farm" so resuming after break-world
+            --    teleport correctly skips harvest AND break on the farm world. ──
             local skipHarvest = (cycleCount == 1) and
-                (currentPhase == "breaking" or currentPhase == "planting" or resumeAtStorage)
+                (currentPhase == "breaking" or currentPhase == "planting" or currentPhase == "going_farm" or resumeAtStorage)
             local skipBreak   = (cycleCount == 1) and
-                (currentPhase == "planting" or resumeAtStorage)
+                (currentPhase == "planting" or currentPhase == "going_farm" or resumeAtStorage)
             local skipPlant   = (cycleCount == 1) and resumeAtStorage
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
             -- resumePlantY: pass the saved row whenever phase was "planting",
