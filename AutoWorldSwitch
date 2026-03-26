@@ -216,6 +216,7 @@ local cycleCount       = 0
 
 local worldList        = {}
 local storageWorld     = ""
+local breakWorld       = ""       -- optional: go here to break, then return to farm world
 local startWorldIdx    = 1
 local growTime         = 75360
 
@@ -565,6 +566,7 @@ local function SaveProgress(autoResume, sync)
             all[currentPlayerName] = {
                 worldList        = wlst,
                 storageWorld     = storageWorld,
+                breakWorld       = breakWorld,
                 startWorldIdx    = startWorldIdx,
                 currentWorldIdx  = currentWorldIdx,
                 currentPhase     = currentPhase,
@@ -615,6 +617,7 @@ local function ApplyPlayerSave(username)
     local d = all[username]; if not d then return nil end
     if d.worldList and type(d.worldList) == "table" then worldList = d.worldList end
     if d.storageWorld   then storageWorld    = d.storageWorld   end
+    if d.breakWorld     then breakWorld      = d.breakWorld     end
     if d.startWorldIdx  then startWorldIdx   = d.startWorldIdx  end
     if d.currentWorldIdx then currentWorldIdx = d.currentWorldIdx end
     if d.currentPhase   then currentPhase    = d.currentPhase   end
@@ -2071,12 +2074,66 @@ local function RunCycle()
                     end
 
                     if not skipBreak then
-                        currentPhase = "breaking"; SaveProgress(true)
+                        currentPhase = "breaking"; SaveProgress(true, true)
                         whSend("⛏ Breaking — world ["..wi.."/"..numWorlds.."] "..farmWorld.." ("..GetTotalByCode(CFG.breakItem).." blocks)")
+
+                        -- ── Optional break world ──────────────────────────────
+                        -- If breakWorld is set, travel there to break, then
+                        -- come back to the farm world to plant.
+                        local wentToBreakWorld = false
+                        if breakWorld ~= "" then
+                            local alreadyAtBreak = (_G._MFRot_JoinedWorld == breakWorld)
+                            if alreadyAtBreak then
+                                _G._MFRot_JoinedWorld = nil
+                                SetStatus("BREAK WORLD " .. breakWorld .. " (already here)", Color3.fromRGB(180, 160, 255))
+                                stopWatching(); worldWatching = false
+                                fullScan(); startWatching(); worldWatching = true
+                            else
+                                SetStatus("→ BREAK WORLD " .. breakWorld, Color3.fromRGB(200, 140, 255))
+                                joinWorld(breakWorld)
+                                if not waitForWorldLoad(90) then
+                                    SetStatus("⚠ Break world timeout — retry", Color3.fromRGB(255, 80, 80))
+                                    joinWorld(breakWorld)
+                                    if not waitForWorldLoad(60) then
+                                        SetStatus("⚠ Break world failed — breaking here", Color3.fromRGB(255, 80, 80))
+                                        task.wait(2)
+                                    end
+                                end
+                            end
+                            if guard() then
+                                stopWatching(); worldWatching = false
+                                fullScan(); startWatching(); worldWatching = true
+                                wentToBreakWorld = true
+                            end
+                        end
+
+                        if not guard() then break end
                         SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
                             Color3.fromRGB(220, 150, 50))
                         local ok = RunBreak(guard)
                         if not ok or not guard() then break end
+
+                        -- ── Return to farm world after breaking ───────────────
+                        if wentToBreakWorld then
+                            SetStatus("← RETURN " .. farmWorld, Color3.fromRGB(180, 220, 255))
+                            currentPhase = "going_farm"; SaveProgress(true, true)
+                            local backHere = (_G._MFRot_JoinedWorld == farmWorld)
+                            if backHere then
+                                _G._MFRot_JoinedWorld = nil
+                                SetStatus("FARM " .. farmWorld .. " (already here)", Color3.fromRGB(150, 255, 180))
+                                stopWatching(); worldWatching = false
+                                fullScan(); startWatching(); worldWatching = true
+                            else
+                                joinWorld(farmWorld)
+                                if not waitForWorldLoad(90) then
+                                    SetStatus("⚠ Return timeout — retry", Color3.fromRGB(255, 80, 80))
+                                    joinWorld(farmWorld); waitForWorldLoad(60)
+                                end
+                            end
+                            if not guard() then break end
+                            stopWatching(); worldWatching = false
+                            fullScan(); startWatching(); worldWatching = true
+                        end
                     else
                         SetStatus("RESUME: skip break", Color3.fromRGB(180, 200, 255))
                         task.wait(0.3)
@@ -2694,6 +2751,17 @@ storageInput.FocusLost:Connect(function()
 end)
 Div()
 
+-- SECTION 3b · BREAK WORLD (optional)
+Cap("BREAK WORLD  (optional)")
+Inf("If set, bot travels here to break, then returns to farm world.")
+local breakInput = TextInput("break world name (leave blank to break in farm)...", breakWorld)
+breakInput.FocusLost:Connect(function()
+    local v = breakInput.Text:match("^%s*(.-)%s*$")
+    breakWorld = v
+    SetStatus("Break world: " .. (v ~= "" and v or "(farm world — not separate)"), Color3.fromRGB(200, 140, 255))
+end)
+Div()
+
 -- SECTION 4 · SAFE MODE
 Cap("SAFE MODE")
 Checkbox("Auto Stop  (stranger joins → stop)", true, function(v) safeAutoStop = v end)
@@ -2982,6 +3050,8 @@ startBtn.MouseButton1Click:Connect(function()
 
     local sv = storageInput.Text:match("^%s*(.-)%s*$")
     if sv ~= "" then storageWorld = sv end
+    local bv = breakInput.Text:match("^%s*(.-)%s*$")
+    breakWorld = bv
 
     if #worldList == 0 then
         SetStatus("Add at least 1 farm world!", Color3.fromRGB(255, 80, 80)); return end
@@ -3112,6 +3182,8 @@ task.spawn(function()
     while not inst.dead do
         local sv = storageInput.Text:match("^%s*(.-)%s*$")
         if sv ~= "" and sv ~= storageWorld then storageWorld = sv end
+        local bv = breakInput.Text:match("^%s*(.-)%s*$")
+        breakWorld = bv  -- empty string = disabled, that's fine
         task.wait(1)
     end
 end)
@@ -3194,6 +3266,7 @@ task.spawn(function()
     -- Refresh drop list display after restore
     pcall(RefreshDropList)
     if storageInput then storageInput.Text = storageWorld end
+    if breakInput   then breakInput.Text   = breakWorld   end
     RefreshWorldList()
 
     task.wait(1)
