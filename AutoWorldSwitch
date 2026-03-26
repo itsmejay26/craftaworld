@@ -180,8 +180,8 @@ if not invScroll then warn("[MFRot] invScroll not found"); return end
 -- ════════════════════════════════════════════════════════════════
 local TILE_SIZE     = 4.5
 local BREAK_FLOOR_Y = 7
-local FARM_TOP_Y    = 59
-local FARM_BOT_Y    = 7
+local FARM_TOP_Y    = 59         -- configurable via GUI (top harvest/plant layer)
+local FARM_BOT_Y    = 7          -- configurable via GUI (bottom layer)
 local TRAV_LEFT     = 0
 local TRAV_RIGHT    = 100
 local JMP_RIGHT     = 99
@@ -567,6 +567,8 @@ local function SaveProgress(autoResume, sync)
                 worldList        = wlst,
                 storageWorld     = storageWorld,
                 breakWorld       = breakWorld,
+                farmTopY         = FARM_TOP_Y,
+                farmBotY         = FARM_BOT_Y,
                 startWorldIdx    = startWorldIdx,
                 currentWorldIdx  = currentWorldIdx,
                 currentPhase     = currentPhase,
@@ -618,6 +620,8 @@ local function ApplyPlayerSave(username)
     if d.worldList and type(d.worldList) == "table" then worldList = d.worldList end
     if d.storageWorld   then storageWorld    = d.storageWorld   end
     if d.breakWorld     then breakWorld      = d.breakWorld     end
+    if d.farmTopY       then FARM_TOP_Y      = d.farmTopY       end
+    if d.farmBotY       then FARM_BOT_Y      = d.farmBotY       end
     if d.startWorldIdx  then startWorldIdx   = d.startWorldIdx  end
     if d.currentWorldIdx then currentWorldIdx = d.currentWorldIdx end
     if d.currentPhase   then currentPhase    = d.currentPhase   end
@@ -1975,12 +1979,13 @@ local function RunCycle()
 
             local resumeAtStorage = (cycleCount == 1) and
                 (currentPhase == "going_storage" or currentPhase == "dropping")
-            -- ── PATCHED: added "going_farm" so resuming after break-world
-            --    teleport correctly skips harvest AND break on the farm world. ──
             local skipHarvest = (cycleCount == 1) and
-                (currentPhase == "breaking" or currentPhase == "planting" or currentPhase == "going_farm" or resumeAtStorage)
+                (currentPhase == "breaking" or currentPhase == "breaking_bw"
+                 or currentPhase == "going_farm"
+                 or currentPhase == "planting" or resumeAtStorage)
             local skipBreak   = (cycleCount == 1) and
-                (currentPhase == "planting" or currentPhase == "going_farm" or resumeAtStorage)
+                (currentPhase == "going_farm"
+                 or currentPhase == "planting" or resumeAtStorage)
             local skipPlant   = (cycleCount == 1) and resumeAtStorage
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
             -- resumePlantY: pass the saved row whenever phase was "planting",
@@ -2035,8 +2040,8 @@ local function RunCycle()
                     SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
                         Color3.fromRGB(180, 180, 255))
                     -- Only reset to "harvesting" for a FRESH join (not a mid-cycle resume).
-                    -- If skipHarvest=true, we saved at "breaking" or "planting" — preserve
-                    -- that phase so the auto-start on the new server resumes correctly.
+                    -- If skipHarvest=true, we saved at "breaking", "breaking_bw", "going_farm",
+                    -- or "planting" — preserve that phase so auto-start resumes correctly.
                     if not skipHarvest then
                         currentPhase = "harvesting"
                         currentRowY  = FARM_TOP_Y
@@ -2076,14 +2081,13 @@ local function RunCycle()
                     end
 
                     if not skipBreak then
-                        currentPhase = "breaking"; SaveProgress(true, true)
                         whSend("⛏ Breaking — world ["..wi.."/"..numWorlds.."] "..farmWorld.." ("..GetTotalByCode(CFG.breakItem).." blocks)")
 
                         -- ── Optional break world ──────────────────────────────
                         -- If breakWorld is set, travel there to break, then
-                        -- come back to the farm world to plant.
-                        local wentToBreakWorld = false
+                        -- return to the farm world to plant.
                         if breakWorld ~= "" then
+                            -- Check if we're resuming and already in the break world
                             local alreadyAtBreak = (_G._MFRot_JoinedWorld == breakWorld)
                             if alreadyAtBreak then
                                 _G._MFRot_JoinedWorld = nil
@@ -2091,34 +2095,33 @@ local function RunCycle()
                                 stopWatching(); worldWatching = false
                                 fullScan(); startWatching(); worldWatching = true
                             else
+                                -- Save as "breaking_bw" BEFORE leaving so auto-resume on
+                                -- the new server knows to run RunBreak there, not harvest.
+                                currentPhase = "breaking_bw"; SaveProgress(true, true)
                                 SetStatus("→ BREAK WORLD " .. breakWorld, Color3.fromRGB(200, 140, 255))
                                 joinWorld(breakWorld)
                                 if not waitForWorldLoad(90) then
                                     SetStatus("⚠ Break world timeout — retry", Color3.fromRGB(255, 80, 80))
                                     joinWorld(breakWorld)
                                     if not waitForWorldLoad(60) then
-                                        SetStatus("⚠ Break world failed — breaking here", Color3.fromRGB(255, 80, 80))
+                                        SetStatus("⚠ Break world failed — breaking in farm world", Color3.fromRGB(255, 80, 80))
                                         task.wait(2)
                                     end
                                 end
                             end
-                            if guard() then
-                                stopWatching(); worldWatching = false
-                                fullScan(); startWatching(); worldWatching = true
-                                wentToBreakWorld = true
-                            end
-                        end
+                            if not guard() then break end
+                            stopWatching(); worldWatching = false
+                            fullScan(); startWatching(); worldWatching = true
 
-                        if not guard() then break end
-                        SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
-                            Color3.fromRGB(220, 150, 50))
-                        local ok = RunBreak(guard)
-                        if not ok or not guard() then break end
+                            -- Run break in the break world
+                            currentPhase = "breaking"; SaveProgress(true)
+                            SetStatus("BREAK WORLD — BREAK", Color3.fromRGB(220, 150, 50))
+                            local ok = RunBreak(guard)
+                            if not ok or not guard() then break end
 
-                        -- ── Return to farm world after breaking ───────────────
-                        if wentToBreakWorld then
-                            SetStatus("← RETURN " .. farmWorld, Color3.fromRGB(180, 220, 255))
+                            -- Return to farm world to plant
                             currentPhase = "going_farm"; SaveProgress(true, true)
+                            SetStatus("← RETURN " .. farmWorld, Color3.fromRGB(180, 220, 255))
                             local backHere = (_G._MFRot_JoinedWorld == farmWorld)
                             if backHere then
                                 _G._MFRot_JoinedWorld = nil
@@ -2135,6 +2138,14 @@ local function RunCycle()
                             if not guard() then break end
                             stopWatching(); worldWatching = false
                             fullScan(); startWatching(); worldWatching = true
+
+                        else
+                            -- No break world — break in the farm world (original behaviour)
+                            currentPhase = "breaking"; SaveProgress(true)
+                            SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
+                                Color3.fromRGB(220, 150, 50))
+                            local ok = RunBreak(guard)
+                            if not ok or not guard() then break end
                         end
                     else
                         SetStatus("RESUME: skip break", Color3.fromRGB(180, 200, 255))
@@ -2763,6 +2774,93 @@ breakInput.FocusLost:Connect(function()
     SetStatus("Break world: " .. (v ~= "" and v or "(farm world — not separate)"), Color3.fromRGB(200, 140, 255))
 end)
 Div()
+
+-- SECTION 3c · LAYER RANGE
+Cap("LAYER RANGE  (harvest & plant)")
+Inf("Top layer = highest row to harvest/plant. Default: 59.")
+Inf("Bottom layer = lowest row. Default: 7.")
+
+do
+    -- Top layer row: shows current FARM_TOP_Y, stepper ±2
+    local topFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
+    mkCorner(topFrame, 5); mkStroke(topFrame, Color3.fromRGB(45, 75, 55))
+
+    local topLbl = Instance.new("TextLabel", topFrame)
+    topLbl.Size = UDim2.new(0.45, 0, 1, 0); topLbl.Position = UDim2.new(0, 6, 0, 0)
+    topLbl.BackgroundTransparency = 1; topLbl.Text = "Top layer Y:"
+    topLbl.TextColor3 = Color3.fromRGB(130, 175, 145); topLbl.TextSize = 8
+    topLbl.Font = Enum.Font.Gotham; topLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local topMinus = Instance.new("TextButton", topFrame)
+    topMinus.Size = UDim2.new(0, 18, 0, 16); topMinus.Position = UDim2.new(0.52, 0, 0.5, -8)
+    topMinus.BackgroundColor3 = Color3.fromRGB(140, 60, 60); topMinus.BorderSizePixel = 0
+    topMinus.Text = "−"; topMinus.TextColor3 = Color3.new(1,1,1)
+    topMinus.TextSize = 12; topMinus.Font = Enum.Font.GothamBold; mkCorner(topMinus, 3)
+
+    local topValLbl = Instance.new("TextLabel", topFrame)
+    topValLbl.Size = UDim2.new(0, 36, 1, 0); topValLbl.Position = UDim2.new(0.52, 20, 0, 0)
+    topValLbl.BackgroundTransparency = 1; topValLbl.Text = tostring(FARM_TOP_Y)
+    topValLbl.TextColor3 = Color3.fromRGB(180, 255, 200); topValLbl.TextSize = 9
+    topValLbl.Font = Enum.Font.GothamBold
+
+    local topPlus = Instance.new("TextButton", topFrame)
+    topPlus.Size = UDim2.new(0, 18, 0, 16); topPlus.Position = UDim2.new(0.52, 58, 0.5, -8)
+    topPlus.BackgroundColor3 = Color3.fromRGB(45, 130, 65); topPlus.BorderSizePixel = 0
+    topPlus.Text = "+"; topPlus.TextColor3 = Color3.new(1,1,1)
+    topPlus.TextSize = 12; topPlus.Font = Enum.Font.GothamBold; mkCorner(topPlus, 3)
+
+    topMinus.MouseButton1Click:Connect(function()
+        local v = math.max(FARM_BOT_Y + 2, FARM_TOP_Y - 2)
+        FARM_TOP_Y = v; topValLbl.Text = tostring(v)
+        SetStatus("Top layer: Y=" .. v, Color3.fromRGB(180, 255, 200))
+    end)
+    topPlus.MouseButton1Click:Connect(function()
+        local v = math.min(200, FARM_TOP_Y + 2)
+        FARM_TOP_Y = v; topValLbl.Text = tostring(v)
+        SetStatus("Top layer: Y=" .. v, Color3.fromRGB(180, 255, 200))
+    end)
+    Y += 24
+
+    -- Bottom layer row
+    local botFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
+    mkCorner(botFrame, 5); mkStroke(botFrame, Color3.fromRGB(45, 75, 55))
+
+    local botLbl = Instance.new("TextLabel", botFrame)
+    botLbl.Size = UDim2.new(0.45, 0, 1, 0); botLbl.Position = UDim2.new(0, 6, 0, 0)
+    botLbl.BackgroundTransparency = 1; botLbl.Text = "Bottom layer Y:"
+    botLbl.TextColor3 = Color3.fromRGB(130, 175, 145); botLbl.TextSize = 8
+    botLbl.Font = Enum.Font.Gotham; botLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local botMinus = Instance.new("TextButton", botFrame)
+    botMinus.Size = UDim2.new(0, 18, 0, 16); botMinus.Position = UDim2.new(0.52, 0, 0.5, -8)
+    botMinus.BackgroundColor3 = Color3.fromRGB(140, 60, 60); botMinus.BorderSizePixel = 0
+    botMinus.Text = "−"; botMinus.TextColor3 = Color3.new(1,1,1)
+    botMinus.TextSize = 12; botMinus.Font = Enum.Font.GothamBold; mkCorner(botMinus, 3)
+
+    local botValLbl = Instance.new("TextLabel", botFrame)
+    botValLbl.Size = UDim2.new(0, 36, 1, 0); botValLbl.Position = UDim2.new(0.52, 20, 0, 0)
+    botValLbl.BackgroundTransparency = 1; botValLbl.Text = tostring(FARM_BOT_Y)
+    botValLbl.TextColor3 = Color3.fromRGB(180, 255, 200); botValLbl.TextSize = 9
+    botValLbl.Font = Enum.Font.GothamBold
+
+    local botPlus = Instance.new("TextButton", botFrame)
+    botPlus.Size = UDim2.new(0, 18, 0, 16); botPlus.Position = UDim2.new(0.52, 58, 0.5, -8)
+    botPlus.BackgroundColor3 = Color3.fromRGB(45, 130, 65); botPlus.BorderSizePixel = 0
+    botPlus.Text = "+"; botPlus.TextColor3 = Color3.new(1,1,1)
+    botPlus.TextSize = 12; botPlus.Font = Enum.Font.GothamBold; mkCorner(botPlus, 3)
+
+    botMinus.MouseButton1Click:Connect(function()
+        local v = math.max(BREAK_FLOOR_Y, FARM_BOT_Y - 2)
+        FARM_BOT_Y = v; botValLbl.Text = tostring(v)
+        SetStatus("Bottom layer: Y=" .. v, Color3.fromRGB(180, 255, 200))
+    end)
+    botPlus.MouseButton1Click:Connect(function()
+        local v = math.min(FARM_TOP_Y - 2, FARM_BOT_Y + 2)
+        FARM_BOT_Y = v; botValLbl.Text = tostring(v)
+        SetStatus("Bottom layer: Y=" .. v, Color3.fromRGB(180, 255, 200))
+    end)
+    Y += 24
+end
 
 -- SECTION 4 · SAFE MODE
 Cap("SAFE MODE")
