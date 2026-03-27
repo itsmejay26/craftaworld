@@ -194,7 +194,7 @@ local PNB_FIRE_SPD  = 0.01
 local PNB_MAX_PLACE = 300
 local PNB_MAX_BREAK = 1000
 local RESPAWN_WAIT  = 4
-local JUMP_HOLD_PNB = 3
+local JUMP_HOLD_PNB = 5  -- FIX: was 3, changed to 5
 
 local MAX_DROP      = 200
 local DROP_COOLDOWN = 1
@@ -964,25 +964,6 @@ end
 
 -- ════════════════════════════════════════════════════════════════
 --  HARVEST
---
---  Per-row strategy (top Y=59 → bottom Y=7, step -2):
---
---    FORWARD SWEEP  →  X1 to X99:  fire fstR at (ix, rowY)
---    REVERSE SWEEP  ←  X99 to X1:  fire fstR at (ix, belowY=rowY-2)
---      • We harvest the current row going right, then walk back left
---        while simultaneously breaking the row below so its drops
---        are ready when we land there.
---    FALL  →  walk off left edge (X=0) → land on belowY (next row)
---
---  Wrong-layer recovery (applies to both sweeps):
---    If player falls to the wrong layer mid-sweep:
---      • Left side  (ix ≤ 50) → walk to X=1,  climb to rowY
---      • Right side (ix > 50) → walk to X=99, climb to rowY
---      • Walk back to the X position where the fall occurred
---      • Resume the sweep in the original direction
---
---  Last row (Y=7):
---    Forward sweep only — no belowY exists — then fall to break floor.
 -- ════════════════════════════════════════════════════════════════
 local function RunHarvest(guardFn, resumeRowY)
     if _G._MFRot_SkipHarvest then
@@ -1061,8 +1042,6 @@ local function RunHarvest(guardFn, resumeRowY)
     end
 
     -- ── Side-aware climb ──────────────────────────────────────────
-    -- Left side (ix ≤ 50) → walk to X=1  then climb
-    -- Right side (ix > 50) → walk to X=99 then climb
     local function climbFromCurrentSide(targetY, gFn)
         local ix = GetTileIndex(); if not ix then return false end
         if ix <= 50 then walkToX(JMP_LEFT, gFn) else walkToX(JMP_RIGHT, gFn) end
@@ -1071,19 +1050,11 @@ local function RunHarvest(guardFn, resumeRowY)
         return gFn()
     end
 
-    -- ── Determine starting side for this run ─────────────────────
-    --  Row 1 (absolute first): always start from left, double-sweep.
-    --  Rows 2+: alternate based on which edge was used to fall down.
-    --    ri=2  → came from X=0  (left)  → comingFromLeft=true
-    --    ri=3  → came from X=100 (right) → comingFromLeft=false
-    --    ri=4  → true, ri=5 → false, …
-    --    Pattern: comingFromLeft = (ri % 2 == 0)
     local comingFromLeft = true
     if startIdx > 1 then
         comingFromLeft = (startIdx % 2 == 0)
     end
 
-    -- ── Initial position ─────────────────────────────────────────
     do
         local _, startIy = GetTileIndex()
         if not startIy or math.abs(startIy - rows[startIdx]) > 1 then
@@ -1095,8 +1066,6 @@ local function RunHarvest(guardFn, resumeRowY)
         if not guardFn() then return false end
     end
 
-    -- ── Shared fall helper ────────────────────────────────────────
-    -- Press key until Y changes (player leaves current layer).
     local function fallOff(key, rowY2, belowY2, gFn)
         SetStatus("↓ Y="..belowY2, Color3.fromRGB(200,180,60))
         local lr = tick()
@@ -1114,7 +1083,6 @@ local function RunHarvest(guardFn, resumeRowY)
         releaseKey(key); stopAll()
         if not gFn() then return false end
         task.wait(0.15)
-        -- Post-fall overshoot check
         local _, landY = GetTileIndex()
         if landY and landY < belowY2 then
             SetStatus("FALL FIX ↑ Y="..belowY2, Color3.fromRGB(255,160,60))
@@ -1124,22 +1092,6 @@ local function RunHarvest(guardFn, resumeRowY)
         return true
     end
 
-    -- ════════════════════════════════════════════════════════════
-    --  MAIN LOOP
-    --
-    --  Row 1 (ri==1) — special double-sweep:
-    --    Pass A →  X1  → X99,  hFire rowY    (harvest current layer)
-    --    Pass B ←  X99 → X0,   hFire belowY  (pre-break next layer)
-    --    Fall off left edge (X=0)  →  comingFromLeft = true next
-    --
-    --  Rows 2+ — single sweep based on approach side:
-    --    comingFromLeft → X1 → X100, hFire belowY, fall off X=100
-    --                                              comingFromLeft = false
-    --    coming from right → X99 → X0, hFire belowY, fall off X=0
-    --                                              comingFromLeft = true
-    --
-    --  Last row (Y=7) — single sweep, NO hFire (no belowY), then stop.
-    -- ════════════════════════════════════════════════════════════
     for ri = startIdx, #rows do
         if _G._MFRot_SkipHarvest then
             _G._MFRot_SkipHarvest = nil; stopAll()
@@ -1150,15 +1102,11 @@ local function RunHarvest(guardFn, resumeRowY)
 
         local rowY      = rows[ri]
         local belowY    = rowY - 2
-        local isLast    = (ri == #rows)   -- Y=7, no layer below
-        local isAbsFirst = (ri == 1)      -- very first row: double-sweep
+        local isLast    = (ri == #rows)
+        local isAbsFirst = (ri == 1)
         currentRowY = rowY
-        -- Sync save so the row is guaranteed written before the player
-        -- might disconnect. Async risks the save finishing AFTER currentRowY
-        -- is reset, losing the progress.
-        SaveProgress(true, true)
+        SaveProgress(true)
 
-        -- ── LAYER VERIFICATION (unconditional) ───────────────────
         local _, curY = GetTileIndex()
         if not curY or curY ~= rowY then
             if curY and curY > rowY then
@@ -1174,9 +1122,6 @@ local function RunHarvest(guardFn, resumeRowY)
         if not guardFn() then return false end
 
         if isAbsFirst then
-            -- ════════════════════════════════════════════════════
-            --  PASS A →  X1 → X99  —  punch rowY  (harvest)
-            -- ════════════════════════════════════════════════════
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." → Y="..rowY, Color3.fromRGB(255,200,80))
             local lr = tick()
@@ -1185,12 +1130,9 @@ local function RunHarvest(guardFn, resumeRowY)
             while guardFn() do
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                -- boundary first — avoids false "wrong layer" at edge
                 if ix >= JMP_RIGHT then stopAll(); break end
                 if iy and iy ~= rowY then
                     stopAll(); local sx = ix
-                    -- Track consecutive falls at the same X position.
-                    -- If >= 3 in a row, skip past the stuck tile instead of looping forever.
                     if math.abs(sx - lastFallX_A) <= 2 then
                         fallRetries_A += 1
                     else
@@ -1226,11 +1168,8 @@ local function RunHarvest(guardFn, resumeRowY)
             end
             stopAll(); if not guardFn() then return false end
 
-            if isLast then break end  -- single-row farm edge case
+            if isLast then break end
 
-            -- ════════════════════════════════════════════════════
-            --  PASS B ←  X99 → X0  —  punch belowY  (pre-break)
-            -- ════════════════════════════════════════════════════
             hClearPending()
             SetStatus("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY, Color3.fromRGB(220,160,60))
             lr = tick()
@@ -1239,7 +1178,6 @@ local function RunHarvest(guardFn, resumeRowY)
             while guardFn() do
                 if _G._MFRot_SkipHarvest then stopAll(); break end
                 local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                -- boundary first (X=0 is the void; stop there)
                 if ix <= TRAV_LEFT then stopAll(); break end
                 if iy and iy ~= rowY then
                     stopAll(); local sx = ix
@@ -1278,22 +1216,13 @@ local function RunHarvest(guardFn, resumeRowY)
             end
             stopAll(); if not guardFn() then return false end
 
-            -- Fall off left edge (X=0) → land on belowY
             if not fallOff(Enum.KeyCode.A, rowY, belowY, guardFn) then return false end
-            comingFromLeft = true   -- fell from X=0, next row starts from left
+            comingFromLeft = true
 
         else
-            -- ════════════════════════════════════════════════════
-            --  SUBSEQUENT ROW — single sweep, direction alternates
-            --
-            --  comingFromLeft → X1→X100, punch belowY, fall X100
-            --  coming from right → X99→X0, punch belowY, fall X0
-            --  Last row: same sweep but NO hFire, just collect.
-            -- ════════════════════════════════════════════════════
             hClearPending()
 
             if comingFromLeft then
-                -- ── X1 → X100 ────────────────────────────────
                 SetStatus(isLast
                     and ("COLLECT "..ri.."/"..#rows.." → Y="..rowY)
                     or  ("HARVEST "..ri.."/"..#rows.." → belowY="..belowY),
@@ -1304,7 +1233,6 @@ local function RunHarvest(guardFn, resumeRowY)
                 while guardFn() do
                     if _G._MFRot_SkipHarvest then stopAll(); break end
                     local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                    -- boundary first: X=100 is the right void edge
                     if ix >= TRAV_RIGHT then stopAll(); break end
                     if iy and iy ~= rowY then
                         stopAll(); local sx = ix
@@ -1347,12 +1275,10 @@ local function RunHarvest(guardFn, resumeRowY)
 
                 if isLast then break end
 
-                -- Fall off right edge (X=100) → land on belowY
                 if not fallOff(Enum.KeyCode.D, rowY, belowY, guardFn) then return false end
-                comingFromLeft = false  -- fell from X=100, next row starts from right
+                comingFromLeft = false
 
             else
-                -- ── X99 → X0 ──────────────────────────────────
                 SetStatus(isLast
                     and ("COLLECT "..ri.."/"..#rows.." ← Y="..rowY)
                     or  ("HARVEST "..ri.."/"..#rows.." ← belowY="..belowY),
@@ -1363,7 +1289,6 @@ local function RunHarvest(guardFn, resumeRowY)
                 while guardFn() do
                     if _G._MFRot_SkipHarvest then stopAll(); break end
                     local ix, iy = GetTileIndex(); if not ix then task.wait(0.01); continue end
-                    -- boundary first: X=0 is the left void edge
                     if ix <= TRAV_LEFT then stopAll(); break end
                     if iy and iy ~= rowY then
                         stopAll(); local sx = ix
@@ -1406,9 +1331,8 @@ local function RunHarvest(guardFn, resumeRowY)
 
                 if isLast then break end
 
-                -- Fall off left edge (X=0) → land on belowY
                 if not fallOff(Enum.KeyCode.A, rowY, belowY, guardFn) then return false end
-                comingFromLeft = true   -- fell from X=0, next row starts from left
+                comingFromLeft = true
             end
         end
     end
@@ -1480,7 +1404,6 @@ local function RunPlant(guardFn, resumeRowY)
             if iy2 and iy2 ~= rowY then
                 stopAll()
                 local fallX = resumeAfterFall or ix
-                -- Track consecutive falls at same X to detect an infinite loop.
                 if math.abs(fallX - lastFallX_P) <= 2 then
                     fallRetries_P += 1
                 else
@@ -1488,7 +1411,6 @@ local function RunPlant(guardFn, resumeRowY)
                 end
                 local resumeX
                 if fallRetries_P >= 3 then
-                    -- Skip past the stuck tile in the sweep direction
                     resumeX = sweepRight
                         and math.min(fallX + 4, TRAV_RIGHT - 1)
                         or  math.max(fallX - 4, TRAV_LEFT  + 1)
@@ -1504,7 +1426,6 @@ local function RunPlant(guardFn, resumeRowY)
                 if sweepRight then startMoveRight() else startMoveLeft() end
                 continue
             end
-            -- On correct layer — reset stuck counter
             fallRetries_P = 0; lastFallX_P = sweepRight and -999 or 999
 
             if sweepRight     and ix >= TRAV_RIGHT then stopAll(); break end
@@ -1568,8 +1489,7 @@ local function RunPlant(guardFn, resumeRowY)
         if _G._MFRot_SkipPlant then _G._MFRot_SkipPlant=nil; stopAll(); SetStatus("TEST: Plant skipped",Color3.fromRGB(200,200,100)); task.wait(0.3); return true end
         stopAll(); if not guardFn() then return false end
 
-        -- Sync save after each row planted — same reason as harvest.
-        SaveProgress(true, true)
+        SaveProgress(true)
 
         if pi < #plantRows then
             goToRowY(plantRows[pi + 1], guardFn); if not guardFn() then return false end
@@ -1729,7 +1649,6 @@ local function RunDrop(guardFn)
         return false
     end
 
-    -- Wait for remotes if not loaded yet
     if not playerDropR or not uiPromptR then
         SetStatus("DROP: Waiting for drop remotes...", Color3.fromRGB(220, 180, 80))
         local t = tick()
@@ -1762,7 +1681,6 @@ local function RunDrop(guardFn)
         return guardFn()
     end
 
-    -- ── Drop each configured item in order ────────────────────────
     for di, entry in ipairs(CFG.dropList) do
         if not guardFn() then return false end
         local code        = entry.code
@@ -1770,7 +1688,6 @@ local function RunDrop(guardFn)
         local unstackable = entry.unstackable
 
         local total = GetTotalByCode(code)
-        -- Unstackable items: no amount text per slot, count occupied slots instead
         if unstackable then total = CountSlotsByCode(code) end
         if total <= 0 then
             SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Nothing to drop ✓",
@@ -1788,8 +1705,6 @@ local function RunDrop(guardFn)
                 loopGuard += 1
                 if loopGuard > maxLoops then break end
 
-                -- For unstackable items count occupied slots (no amount text).
-                -- For stackable items use the normal total.
                 local remaining
                 if unstackable then
                     remaining = CountSlotsByCode(code)
@@ -1802,7 +1717,6 @@ local function RunDrop(guardFn)
                     break
                 end
 
-                -- FindSlotByCodeAny works for unstackable (no amount requirement)
                 local slotN = unstackable and FindSlotByCodeAny(code) or FindSlotByCode(code)
                 if not slotN then
                     SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: Cleared ✓",
@@ -1823,18 +1737,15 @@ local function RunDrop(guardFn)
                     })
                 end)
 
-                -- Unstackable items need a shorter cooldown for 1-by-1 speed
                 task.wait(unstackable and 0.5 or DROP_COOLDOWN)
                 if not guardFn() then return false end
             end
 
-            -- One retry if anything is left
             local leftover = GetTotalByCode(code)
             if leftover > 0 and not unstackable then
                 SetStatus("DROP ["..di.."/"..#CFG.dropList.."]: "..leftover.." remain — retrying...",
                     Color3.fromRGB(255, 180, 80))
                 task.wait(1)
-                -- Re-run just this single entry via a tiny inline loop
                 if guardFn() then
                     local sg = 0
                     while guardFn() and sg < 10 do
@@ -1941,14 +1852,12 @@ local function RunCycle()
 
     cycleCount = 0
 
-    -- Webhook: record start time and send initial ping
     whStartTime    = tick()
     whCycle1Start  = nil
     whCycle1End    = nil
     whCurrentWorld = ""
     whSend("🚀 Farm started")
 
-    -- ── Webhook: 10-minute periodic update loop ───────────────────
     task.spawn(function()
         while isRunning and not inst.dead do
             task.wait(WH_GENERAL_INTERVAL)
@@ -1962,14 +1871,8 @@ local function RunCycle()
     while guard() do
         cycleCount += 1
         local numWorlds = #worldList
-        -- Cycle 1: start from currentWorldIdx (= startWorldIdx for a fresh run,
-        --          or the saved world index when resuming mid-cycle).
-        -- Cycle 2+: ALWAYS restart from world 1 so the full rotation repeats
-        --           correctly regardless of which world was selected as start.
-        --           startWorldIdx only affects the very first run.
         local loopStart = (cycleCount == 1) and currentWorldIdx or 1
 
-        -- Webhook: mark cycle 1 start time
         if cycleCount == 1 then whCycle1Start = tick() end
 
         for wi = loopStart, numWorlds do
@@ -1988,8 +1891,6 @@ local function RunCycle()
                  or currentPhase == "planting" or resumeAtStorage)
             local skipPlant   = (cycleCount == 1) and resumeAtStorage
             local resumeHarvestY = (cycleCount == 1 and not skipHarvest) and currentRowY or nil
-            -- resumePlantY: pass the saved row whenever phase was "planting",
-            -- regardless of whether we also skipped break.
             local resumePlantY = (cycleCount == 1 and currentPhase == "planting" and not skipPlant) and currentRowY or nil
 
             if cycleCount == 1 and wi > loopStart then
@@ -2028,36 +1929,54 @@ local function RunCycle()
             local skipThisWorld = false
 
             if not didStorageResume then
-                local alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
-                if alreadyHere then
+                -- ════════════════════════════════════════════════
+                --  FIX: detect resume mid-break-world detour so we
+                --  don't incorrectly try to join the farm world and
+                --  cause an infinite teleport loop.
+                -- ════════════════════════════════════════════════
+                local alreadyInBreakWorld = cycleCount == 1
+                    and breakWorld ~= ""
+                    and (currentPhase == "breaking_bw" or currentPhase == "breaking")
+                    and _G._MFRot_JoinedWorld == breakWorld
+
+                local alreadyHere
+                if alreadyInBreakWorld then
+                    -- We are already in the break world on resume — skip the farm
+                    -- world join entirely and set up watching here instead.
                     _G._MFRot_JoinedWorld = nil
-                    SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
-                        .. " (already here)", Color3.fromRGB(150, 255, 180))
-                    SaveProgress(true)
+                    alreadyHere = true
+                    SetStatus("BREAK WORLD " .. breakWorld .. " (resume, already here)", Color3.fromRGB(180, 160, 255))
                     stopWatching(); worldWatching = false
                     fullScan(); startWatching(); worldWatching = true
                 else
-                    SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
-                        Color3.fromRGB(180, 180, 255))
-                    -- Only reset to "harvesting" for a FRESH join (not a mid-cycle resume).
-                    -- If skipHarvest=true, we saved at "breaking", "breaking_bw", "going_farm",
-                    -- or "planting" — preserve that phase so auto-start resumes correctly.
-                    if not skipHarvest then
-                        currentPhase = "harvesting"
-                        currentRowY  = FARM_TOP_Y
-                    end
-                    currentWorldIdx = wi
-                    SaveProgress(true, true)
-                    joinWorld(farmWorld)
-                    if not waitForWorldLoad(90) then
-                        SetStatus("⚠ Timeout: " .. farmWorld .. " — retry", Color3.fromRGB(255, 80, 80))
+                    alreadyHere = (_G._MFRot_JoinedWorld == farmWorld)
+                    if alreadyHere then
+                        _G._MFRot_JoinedWorld = nil
+                        SetStatus("WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld
+                            .. " (already here)", Color3.fromRGB(150, 255, 180))
+                        SaveProgress(true)
+                        stopWatching(); worldWatching = false
+                        fullScan(); startWatching(); worldWatching = true
+                    else
+                        SetStatus("→ WORLD [" .. wi .. "/" .. numWorlds .. "] " .. farmWorld,
+                            Color3.fromRGB(180, 180, 255))
+                        if not skipHarvest then
+                            currentPhase = "harvesting"
+                            currentRowY  = FARM_TOP_Y
+                        end
+                        currentWorldIdx = wi
+                        SaveProgress(true, true)
                         joinWorld(farmWorld)
-                        if not waitForWorldLoad(60) then
-                            SetStatus("⚠ Failed: " .. farmWorld .. " — skipping", Color3.fromRGB(255, 80, 80))
-                            task.wait(3); skipThisWorld = true
+                        if not waitForWorldLoad(90) then
+                            SetStatus("⚠ Timeout: " .. farmWorld .. " — retry", Color3.fromRGB(255, 80, 80))
+                            joinWorld(farmWorld)
+                            if not waitForWorldLoad(60) then
+                                SetStatus("⚠ Failed: " .. farmWorld .. " — skipping", Color3.fromRGB(255, 80, 80))
+                                task.wait(3); skipThisWorld = true
+                            end
                         end
                     end
-                end
+                end  -- end alreadyInBreakWorld wrapper
 
                 if not skipThisWorld then
                     if not guard() then break end
@@ -2083,20 +2002,17 @@ local function RunCycle()
                     if not skipBreak then
                         whSend("⛏ Breaking — world ["..wi.."/"..numWorlds.."] "..farmWorld.." ("..GetTotalByCode(CFG.breakItem).." blocks)")
 
-                        -- ── Optional break world ──────────────────────────────
-                        -- If breakWorld is set, travel there to break, then
-                        -- return to the farm world to plant.
                         if breakWorld ~= "" then
-                            -- Check if we're resuming and already in the break world
-                            local alreadyAtBreak = (_G._MFRot_JoinedWorld == breakWorld)
+                            -- FIX: consume alreadyInBreakWorld so we don't double-join
+                            local alreadyAtBreak = alreadyInBreakWorld or (_G._MFRot_JoinedWorld == breakWorld)
+                            alreadyInBreakWorld = false  -- consume the flag
+
                             if alreadyAtBreak then
                                 _G._MFRot_JoinedWorld = nil
                                 SetStatus("BREAK WORLD " .. breakWorld .. " (already here)", Color3.fromRGB(180, 160, 255))
                                 stopWatching(); worldWatching = false
                                 fullScan(); startWatching(); worldWatching = true
                             else
-                                -- Save as "breaking_bw" BEFORE leaving so auto-resume on
-                                -- the new server knows to run RunBreak there, not harvest.
                                 currentPhase = "breaking_bw"; SaveProgress(true, true)
                                 SetStatus("→ BREAK WORLD " .. breakWorld, Color3.fromRGB(200, 140, 255))
                                 joinWorld(breakWorld)
@@ -2113,13 +2029,11 @@ local function RunCycle()
                             stopWatching(); worldWatching = false
                             fullScan(); startWatching(); worldWatching = true
 
-                            -- Run break in the break world
                             currentPhase = "breaking"; SaveProgress(true)
                             SetStatus("BREAK WORLD — BREAK", Color3.fromRGB(220, 150, 50))
                             local ok = RunBreak(guard)
                             if not ok or not guard() then break end
 
-                            -- Return to farm world to plant
                             currentPhase = "going_farm"; SaveProgress(true, true)
                             SetStatus("← RETURN " .. farmWorld, Color3.fromRGB(180, 220, 255))
                             local backHere = (_G._MFRot_JoinedWorld == farmWorld)
@@ -2140,7 +2054,6 @@ local function RunCycle()
                             fullScan(); startWatching(); worldWatching = true
 
                         else
-                            -- No break world — break in the farm world (original behaviour)
                             currentPhase = "breaking"; SaveProgress(true)
                             SetStatus("WORLD " .. wi .. "/" .. numWorlds .. " — BREAK",
                                 Color3.fromRGB(220, 150, 50))
@@ -2192,8 +2105,6 @@ local function RunCycle()
                         Color3.fromRGB(255, 180, 60))
                     RunDrop(guard)
                     if not guard() then break end
-                    -- Reset phase after drop so the NEXT world in the loop doesn't
-                    -- incorrectly read currentPhase="dropping" and skip itself via resumeAtStorage.
                     currentPhase = "harvesting"
                     currentRowY  = FARM_TOP_Y
                 end
@@ -2203,7 +2114,6 @@ local function RunCycle()
         currentWorldIdx = 1
         currentRowY     = FARM_TOP_Y
         currentPhase    = "harvesting"
-        -- Webhook: record cycle 1 total time on first completion
         if cycleCount == 1 and not whCycle1End then
             whCycle1End = tick()
         end
@@ -2480,12 +2390,11 @@ breakItemLbl = InfoRow("Break: NOT SET")
 Div()
 
 -- ════════════════════════════════════════════════════════════════
---  DROP ITEMS  (multi-drop with per-item amount + unstackable mode)
+--  DROP ITEMS
 -- ════════════════════════════════════════════════════════════════
 Cap("DROP ITEMS  (storage world)")
 Inf("Highlight item → ADD DROP ITEM. Each item can be configured separately.")
 
--- Scrollable list of configured drop items
 local DL_H = 70
 local dropListFrame = Instance.new("ScrollingFrame", scroll)
 dropListFrame.Size               = UDim2.new(1, 0, 0, DL_H)
@@ -2500,7 +2409,6 @@ mkCorner(dropListFrame, 5); mkStroke(dropListFrame, Color3.fromRGB(45, 75, 50))
 Instance.new("UIPadding", dropListFrame).PaddingLeft = UDim.new(0, 4)
 Y += DL_H + 4
 
--- forward-declare so ADD button callback can call it
 local RefreshDropList
 
 local function RemoveDropEntry(idx)
@@ -2530,10 +2438,7 @@ RefreshDropList = function()
         rowF.BorderSizePixel  = 0
         mkCorner(rowF, 3)
 
-        -- Item label
         local qty = GetTotalByCode(entry.code)
-        -- Unstackable items show no amount text per slot, so GetTotalByCode
-        -- returns 0 even if many are held. Count occupied slots instead.
         if entry.unstackable and qty == 0 then
             qty = CountSlotsByCode(entry.code)
         end
@@ -2548,7 +2453,6 @@ RefreshDropList = function()
         lbl.TextXAlignment   = Enum.TextXAlignment.Left
         lbl.TextTruncate     = Enum.TextTruncate.AtEnd
 
-        -- Toggle unstackable button
         local toggleBtn = Instance.new("TextButton", rowF)
         toggleBtn.Size             = UDim2.new(0, 24, 0, 16)
         toggleBtn.Position         = UDim2.new(1, -50, 0.5, -8)
@@ -2566,7 +2470,6 @@ RefreshDropList = function()
                 Color3.fromRGB(200, 180, 255))
         end)
 
-        -- Remove button
         local remBtn = Instance.new("TextButton", rowF)
         remBtn.Size             = UDim2.new(0, 22, 0, 16)
         remBtn.Position         = UDim2.new(1, -24, 0.5, -8)
@@ -2585,10 +2488,8 @@ RefreshDropList = function()
 end
 RefreshDropList()
 
--- Amount stepper row (for next item to add — shown before adding)
 local dropAmtValue = 200
 do
-    -- Amount stepper
     local amtFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
     mkCorner(amtFrame, 5); mkStroke(amtFrame, Color3.fromRGB(45, 75, 55))
 
@@ -2640,12 +2541,10 @@ do
     Y += 24
 end
 
--- ADD DROP ITEM button
 Btn("+ ADD DROP ITEM  (highlight first)", 0, 1, Color3.fromRGB(100, 50, 160), function()
     if not lastSelSlot then SetStatus("Highlight an item in inventory first!", Color3.fromRGB(255,80,80)); return end
     local k = GetSlotKey(lastSelSlot); if not k then return end
     local code = GetCode(k)
-    -- Prevent duplicate
     for _, entry in ipairs(CFG.dropList) do
         if entry.code == code then
             SetStatus("That item is already in the drop list!", Color3.fromRGB(255, 160, 80)); return
@@ -2781,7 +2680,6 @@ Inf("Top layer = highest row to harvest/plant. Default: 59.")
 Inf("Bottom layer = lowest row. Default: 7.")
 
 do
-    -- Top layer row: shows current FARM_TOP_Y, stepper ±2
     local topFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
     mkCorner(topFrame, 5); mkStroke(topFrame, Color3.fromRGB(45, 75, 55))
 
@@ -2821,7 +2719,6 @@ do
     end)
     Y += 24
 
-    -- Bottom layer row
     local botFrame = mkFrame(scroll, Color3.fromRGB(22, 32, 26), Y, 20)
     mkCorner(botFrame, 5); mkStroke(botFrame, Color3.fromRGB(45, 75, 55))
 
@@ -3135,7 +3032,6 @@ startBtn.MouseButton1Click:Connect(function()
                     and ("Break: " .. keyName(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
                     or "Break: NOT SET"
             end
-            -- Refresh drop list display after restore
             pcall(RefreshDropList)
             if storageInput and storageWorld ~= "" then
                 storageInput.Text = storageWorld
@@ -3190,8 +3086,6 @@ stopBtn.MouseButton1Click:Connect(function()
         pauseBtn.Text             = "⏸ PAUSE"
         pauseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 140)
     end
-    -- Reset resume flag so next manual START always uses the selected world,
-    -- not the last saved world from a previous run or auto-resume.
     resumeEnabled = false
     if setResumeEnabled then setResumeEnabled(false) end
     _G._MFRot_UserStopped = true
@@ -3270,7 +3164,6 @@ task.spawn(function()
             breakItemLbl.Text = "Break: " .. CFG.breakItem
                 .. "  x" .. GetTotalByCode(CFG.breakItem)
         end
-        -- Refresh drop list counts live
         if RefreshDropList then
             pcall(RefreshDropList)
         end
@@ -3283,7 +3176,7 @@ task.spawn(function()
         local sv = storageInput.Text:match("^%s*(.-)%s*$")
         if sv ~= "" and sv ~= storageWorld then storageWorld = sv end
         local bv = breakInput.Text:match("^%s*(.-)%s*$")
-        breakWorld = bv  -- empty string = disabled, that's fine
+        breakWorld = bv
         task.wait(1)
     end
 end)
@@ -3335,53 +3228,6 @@ task.spawn(function()
     end
 
     if not (saved and saved.autoResume == true and cameFromSwitch) then
-        -- Not a farm server-switch — still pre-populate config fields from the save
-        -- so the user doesn't have to re-enter breakWorld, storageWorld, worldList etc.
-        if saved then
-            pcall(function()
-                if saved.worldList and type(saved.worldList) == "table" then
-                    worldList = saved.worldList
-                    RefreshWorldList()
-                end
-                if saved.storageWorld and saved.storageWorld ~= "" then
-                    storageWorld = saved.storageWorld
-                    if storageInput then storageInput.Text = storageWorld end
-                end
-                if saved.breakWorld then
-                    breakWorld = saved.breakWorld
-                    if breakInput then breakInput.Text = breakWorld end
-                end
-                if saved.farmTopY then
-                    FARM_TOP_Y = saved.farmTopY
-                end
-                if saved.farmBotY then
-                    FARM_BOT_Y = saved.farmBotY
-                end
-                -- Restore item codes so the user sees them without having to re-apply
-                if saved.plantItemKey then
-                    CFG.plantItemKey = saved.plantItemKey
-                    CFG.plantItem    = GetCode(saved.plantItemKey)
-                end
-                if saved.breakItemKey then
-                    CFG.breakItemKey = saved.breakItemKey
-                    CFG.breakItem    = GetCode(saved.breakItemKey)
-                end
-                if saved.dropList and type(saved.dropList) == "table" then
-                    CFG.dropList = {}
-                    for _, entry in ipairs(saved.dropList) do
-                        if entry.key then
-                            table.insert(CFG.dropList, {
-                                key         = entry.key,
-                                code        = GetCode(entry.key),
-                                dropAmt     = entry.dropAmt or 200,
-                                unstackable = entry.unstackable == true,
-                            })
-                        end
-                    end
-                    pcall(RefreshDropList)
-                end
-            end)
-        end
         SetStatus("[ READY ] Configure and press START", Color3.fromRGB(150, 255, 180))
         print("[MFRot] Loaded — press START when ready.")
         return
@@ -3410,7 +3256,6 @@ task.spawn(function()
             and ("Break: " .. _kn(CFG.breakItemKey) .. "  x" .. GetTotalByCode(CFG.breakItem))
             or "Break: NOT SET"
     end
-    -- Refresh drop list display after restore
     pcall(RefreshDropList)
     if storageInput then storageInput.Text = storageWorld end
     if breakInput   then breakInput.Text   = breakWorld   end
